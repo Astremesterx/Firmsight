@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "firmsight"
+version = "0.1.0"
+description = "IoT Firmware Emulation & Dynamic Analysis Sandbox"
+readme = "README.md"
+authors = [
+    { name = "Salif (Lead Architect)" },
+    { name = "Ashmi (Binary Analysis Engineer)" },
+    { name = "Poornima (Network & TUI Engineer)" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.40.0",
+    "rich>=13.0.0",
+    "r2pipe>=1.9.0",
+    "dpkt>=1.9.8",
+]
+
+[project.scripts]
+firmsight = "firmsight.cli:main"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
