@@ -7,6 +7,7 @@ from pathlib import Path
 from firmsight.core.config import SAMPLES_DIR, ensure_directories
 from firmsight.emulator.arch import ArchitectureResolver
 from firmsight.emulator.nvram import MockNVRAM
+from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.extractor.extractor import FirmwareExtractor
 from firmsight.extractor.header_parser import HeaderParser
 from firmsight.extractor.mock_firmware import MockFirmwareBuilder
@@ -63,6 +64,14 @@ def main() -> None:
         "init-nvram", help="Initialize mock NVRAM configuration for a rootfs"
     )
     nvram_parser.add_argument(
+        "rootfs", type=str, help="Path to extracted rootfs directory"
+    )
+
+    # Command: prep-rootfs
+    prep_parser = subparsers.add_parser(
+        "prep-rootfs", help="Sanitize rootfs and bridge QEMU static binaries for chroot execution"
+    )
+    prep_parser.add_argument(
         "rootfs", type=str, help="Path to extracted rootfs directory"
     )
 
@@ -138,7 +147,23 @@ def main() -> None:
         ini_file = nvram.write_to_rootfs(rootfs)
         print(f"[+] Mock NVRAM successfully initialized in: {ini_file.parent}")
         print(f"[+] Generated: nvram.ini, nvram.conf, nvram_env.sh")
-        print(f"[+] LAN IP: {nvram.get('lan_ipaddr')} | Router Model: {nvram.get('router_model')}")
+    elif args.command == "prep-rootfs":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        preparer = RootFSPreparer(rootfs)
+        report = preparer.prepare()
+        print(f"[+] RootFS Preparation: {report.status.upper()}")
+        print(f"[+] Target Architecture: {report.architecture}")
+        print(f"[+] QEMU Static Binary: {report.qemu_static_bin} (copied: {report.qemu_copied})")
+        print(f"[+] Created Directories: {len(report.created_directories)}")
+        print(f"[+] Configured Files: {', '.join(report.configured_files) or 'None'}")
+        if report.warnings:
+            print("[!] Notices / Warnings:")
+            for w in report.warnings:
+                print(f"    - {w}")
 
     else:
         parser.print_help()
