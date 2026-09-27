@@ -6,6 +6,7 @@ from pathlib import Path
 
 from firmsight.core.config import SAMPLES_DIR, ensure_directories
 from firmsight.emulator.arch import ArchitectureResolver
+from firmsight.emulator.chroot_runner import ChrootRunner
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.extractor.extractor import FirmwareExtractor
@@ -74,6 +75,15 @@ def main() -> None:
     prep_parser.add_argument(
         "rootfs", type=str, help="Path to extracted rootfs directory"
     )
+
+    # Command: execute
+    exec_parser = subparsers.add_parser(
+        "execute", help="Execute a foreign architecture binary inside the rootfs sandbox"
+    )
+    exec_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    exec_parser.add_argument("binary", type=str, help="Relative path to binary inside rootfs (e.g. usr/sbin/httpd)")
+    exec_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
+    exec_parser.add_argument("--args", nargs="*", default=[], help="Arguments to pass to target binary")
 
     args = parser.parse_args()
 
@@ -164,6 +174,21 @@ def main() -> None:
             print("[!] Notices / Warnings:")
             for w in report.warnings:
                 print(f"    - {w}")
+
+    elif args.command == "execute":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        runner = ChrootRunner(rootfs)
+        res = runner.run(args.binary, args=args.args, timeout=args.timeout)
+        print(f"[+] Execution completed in {res.duration_seconds}s (Mode: {res.emulation_mode})")
+        print(f"[+] Exit Code: {res.exit_code} (Timed out: {res.timed_out})")
+        if res.stdout:
+            print(f"\n[+] Standard Output:\n{res.stdout.strip()}")
+        if res.stderr:
+            print(f"\n[!] Standard Error:\n{res.stderr.strip()}")
 
     else:
         parser.print_help()

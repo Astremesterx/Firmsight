@@ -10,8 +10,8 @@
 ### Phase 1: Foundations & Architecture Identification (Days 1–5)
 - [x] **Day 1:** Scaffolding, repository configuration, binary header parser, mock vulnerable firmware generator, and carving pipeline.
 - [x] **Day 2:** Architecture & Endianness Resolver (`firmsight/emulator/arch.py`) and Mock NVRAM Simulator (`firmsight/emulator/nvram.py`).
-- [x] **Day 3 (Today):** RootFS Sanitizer & Linker Bridge (`firmsight/emulator/rootfs_prep.py`): verify rootfs layout, create missing device directories, map QEMU static binaries, configure DNS resolver.
-- [ ] **Day 4:** Chroot Execution Sandbox (`firmsight/emulator/chroot_runner.py`): execute guest binaries inside chroot via `qemu-arm-static`.
+- [x] **Day 3:** RootFS Sanitizer & Linker Bridge (`firmsight/emulator/rootfs_prep.py`): verify rootfs layout, create missing device directories, map QEMU static binaries, configure DNS resolver.
+- [x] **Day 4 (Today):** Chroot Execution Sandbox (`firmsight/emulator/chroot_runner.py`): user-mode emulation runner executing target foreign binaries inside the prepared rootfs.
 - [ ] **Day 5:** Emulation Health Monitor (`firmsight/emulator/health_monitor.py`): detect segfaults, missing shared libraries, and exit codes.
 
 ### Phase 2: Services & Virtualization (Days 6–10) — *Mid Review Milestone*
