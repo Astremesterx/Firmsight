@@ -7,6 +7,7 @@ from pathlib import Path
 from firmsight.core.config import SAMPLES_DIR, ensure_directories
 from firmsight.emulator.arch import ArchitectureResolver
 from firmsight.emulator.chroot_runner import ChrootRunner
+from firmsight.emulator.health_monitor import HealthMonitor
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.extractor.extractor import FirmwareExtractor
@@ -84,6 +85,14 @@ def main() -> None:
     exec_parser.add_argument("binary", type=str, help="Relative path to binary inside rootfs (e.g. usr/sbin/httpd)")
     exec_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
     exec_parser.add_argument("--args", nargs="*", default=[], help="Arguments to pass to target binary")
+
+    # Command: diagnose
+    diag_parser = subparsers.add_parser(
+        "diagnose", help="Execute binary and run automated emulation health diagnostics"
+    )
+    diag_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    diag_parser.add_argument("binary", type=str, help="Relative path to binary inside rootfs (e.g. usr/sbin/httpd)")
+    diag_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
 
     args = parser.parse_args()
 
@@ -189,6 +198,32 @@ def main() -> None:
             print(f"\n[+] Standard Output:\n{res.stdout.strip()}")
         if res.stderr:
             print(f"\n[!] Standard Error:\n{res.stderr.strip()}")
+
+    elif args.command == "diagnose":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        runner = ChrootRunner(rootfs)
+        exec_res = runner.run(args.binary, timeout=args.timeout)
+        report = HealthMonitor.diagnose(exec_res, binary_rel_path=args.binary, rootfs_dir=rootfs)
+
+        print(f"[*] Diagnostics Report for: {report.binary_path}")
+        print(f"[+] Emulation Status: {report.status}")
+        print(f"[+] Exit Code:        {report.exit_code}")
+        if report.signal_name:
+            print(f"[!] Crash Signal:     {report.signal_name}")
+        if report.missing_libraries:
+            print(f"[!] Missing Libs:     {', '.join(report.missing_libraries)}")
+        if report.issues:
+            print("\n[!] Issues Detected:")
+            for issue in report.issues:
+                print(f"    - [{issue.severity}] {issue.description}")
+        if report.recommendations:
+            print("\n[+] Recommended Remediation:")
+            for rec in report.recommendations:
+                print(f"    - {rec}")
 
     else:
         parser.print_help()
