@@ -10,6 +10,7 @@ from firmsight.emulator.chroot_runner import ChrootRunner
 from firmsight.emulator.health_monitor import HealthMonitor
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import RootFSPreparer
+from firmsight.emulator.service_launcher import ServiceLauncher
 from firmsight.extractor.extractor import FirmwareExtractor
 from firmsight.extractor.header_parser import HeaderParser
 from firmsight.extractor.mock_firmware import MockFirmwareBuilder
@@ -93,6 +94,14 @@ def main() -> None:
     diag_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
     diag_parser.add_argument("binary", type=str, help="Relative path to binary inside rootfs (e.g. usr/sbin/httpd)")
     diag_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
+
+    # Command: launch-web
+    web_parser = subparsers.add_parser(
+        "launch-web", help="Auto-discover and launch embedded router web server inside QEMU"
+    )
+    web_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    web_parser.add_argument("--port", "-p", type=int, default=80, help="Web server port (default: 80)")
+    web_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
 
     args = parser.parse_args()
 
@@ -224,6 +233,34 @@ def main() -> None:
             print("\n[+] Recommended Remediation:")
             for rec in report.recommendations:
                 print(f"    - {rec}")
+
+    elif args.command == "launch-web":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        launcher = ServiceLauncher(rootfs)
+        discovered = launcher.discover_services()
+        print(f"[*] Discovered {len(discovered)} potential embedded services:")
+        for svc in discovered:
+            print(f"    - {svc.name} ({svc.binary_path}) -> Default Port: {svc.default_port}")
+
+        if not discovered:
+            print("[-] No web servers found to launch.", file=sys.stderr)
+            sys.exit(1)
+
+        res = launcher.launch(port=args.port, timeout=args.timeout)
+        print(f"\n[+] Launched Service: {res.service.name} (Port: {res.port})")
+        print(f"[+] Status:           {'RUNNING' if res.is_running else 'FAILED'}")
+        print(f"[+] Execution Mode:   {res.execution.emulation_mode}")
+        if res.notes:
+            for note in res.notes:
+                print(f"    - {note}")
+        if res.execution.stdout:
+            print(f"\n[+] Daemon Output:\n{res.execution.stdout.strip()}")
+        if res.execution.stderr:
+            print(f"\n[!] Daemon Errors / Warnings:\n{res.execution.stderr.strip()}")
 
     else:
         parser.print_help()

@@ -12,10 +12,10 @@
 - [x] **Day 2:** Architecture & Endianness Resolver (`firmsight/emulator/arch.py`) and Mock NVRAM Simulator (`firmsight/emulator/nvram.py`).
 - [x] **Day 3:** RootFS Sanitizer & Linker Bridge (`firmsight/emulator/rootfs_prep.py`): verify rootfs layout, create missing device directories, map QEMU static binaries, configure DNS resolver.
 - [x] **Day 4:** Chroot Execution Sandbox (`firmsight/emulator/chroot_runner.py`): user-mode emulation runner executing target foreign binaries inside the prepared rootfs.
-- [x] **Day 5 (Today):** Emulation Health Monitor (`firmsight/emulator/health_monitor.py`): detect segfaults, missing shared libraries, and exit codes.
+- [x] **Day 5:** Emulation Health Monitor (`firmsight/emulator/health_monitor.py`): detect segfaults, missing shared libraries, and exit codes.
 
 ### Phase 2: Services & Virtualization (Days 6–10) — *Mid Review Milestone*
-- [ ] **Day 6:** Web Server Service Launcher (`firmsight/emulator/service_launcher.py`): automatic detection and invocation of router HTTP daemons (`httpd`, `boa`, `goahead`).
+- [x] **Day 6 (Today):** Web Server Service Launcher (`firmsight/emulator/service_launcher.py`): automatic detection and invocation of router HTTP daemons (`httpd`, `boa`, `goahead`).
 - [ ] **Day 7:** Mock Device Nodes Generator: create simulated `/dev/null`, `/dev/urandom`, `/dev/nvram`, and flash memory blocks.
 - [ ] **Day 8:** Process Lifecycle Daemon (`firmsight/emulator/daemon.py`): asynchronous background process runner with live stdout/stderr capture pipes.
 - [ ] **Day 9:** Extraction Engine v2 (`firmsight/extractor/squashfs_handler.py`): advanced multi-partition SquashFS handling.
