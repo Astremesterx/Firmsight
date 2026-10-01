@@ -7,6 +7,7 @@ from pathlib import Path
 from firmsight.core.config import SAMPLES_DIR, ensure_directories
 from firmsight.emulator.arch import ArchitectureResolver
 from firmsight.emulator.chroot_runner import ChrootRunner
+from firmsight.emulator.device_nodes import DeviceNodeManager
 from firmsight.emulator.health_monitor import HealthMonitor
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import RootFSPreparer
@@ -102,6 +103,13 @@ def main() -> None:
     web_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
     web_parser.add_argument("--port", "-p", type=int, default=80, help="Web server port (default: 80)")
     web_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
+
+    # Command: init-dev
+    dev_parser = subparsers.add_parser(
+        "init-dev", help="Provision simulated Linux character devices and MTD flash blocks"
+    )
+    dev_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    dev_parser.add_argument("--no-mtd", action="store_true", help="Skip creating MTD flash partition blocks")
 
     args = parser.parse_args()
 
@@ -261,6 +269,20 @@ def main() -> None:
             print(f"\n[+] Daemon Output:\n{res.execution.stdout.strip()}")
         if res.execution.stderr:
             print(f"\n[!] Daemon Errors / Warnings:\n{res.execution.stderr.strip()}")
+
+    elif args.command == "init-dev":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        manager = DeviceNodeManager(rootfs)
+        report = manager.provision_all(create_mtd=not args.no_mtd)
+        print(f"[+] Device Node Provisioning: {report.status.upper()}")
+        print(f"[+] Provisioning Mode:        {report.provisioning_mode}")
+        print(f"[+] Created Device Nodes:     {', '.join(report.created_nodes)}")
+        if report.mtd_partitions:
+            print(f"[+] Mock MTD Partitions:     {', '.join(report.mtd_partitions)}")
 
     else:
         parser.print_help()

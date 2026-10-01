@@ -2,6 +2,7 @@
 
 from firmsight.emulator.arch import ArchitectureInfo, ArchitectureResolver
 from firmsight.emulator.chroot_runner import ChrootExecutionResult, ChrootRunner
+from firmsight.emulator.device_nodes import DeviceNodeManager, DeviceNodeReport
 from firmsight.emulator.health_monitor import HealthIssue, HealthMonitor, HealthReport
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import PreparationReport, RootFSPreparer
@@ -12,6 +13,8 @@ __all__ = [
     "ArchitectureResolver",
     "ChrootExecutionResult",
     "ChrootRunner",
+    "DeviceNodeManager",
+    "DeviceNodeReport",
     "DiscoveredService",
     "HealthIssue",
     "HealthMonitor",
