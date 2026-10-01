@@ -7,6 +7,7 @@ from pathlib import Path
 from firmsight.core.config import SAMPLES_DIR, ensure_directories
 from firmsight.emulator.arch import ArchitectureResolver
 from firmsight.emulator.chroot_runner import ChrootRunner
+from firmsight.emulator.daemon import DaemonManager
 from firmsight.emulator.device_nodes import DeviceNodeManager
 from firmsight.emulator.health_monitor import HealthMonitor
 from firmsight.emulator.nvram import MockNVRAM
@@ -110,6 +111,25 @@ def main() -> None:
     )
     dev_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
     dev_parser.add_argument("--no-mtd", action="store_true", help="Skip creating MTD flash partition blocks")
+
+    # Command: daemon
+    daemon_parser = subparsers.add_parser(
+        "daemon", help="Manage asynchronous background emulator processes"
+    )
+    daemon_sub = daemon_parser.add_subparsers(dest="daemon_action", help="Daemon action")
+
+    d_start = daemon_sub.add_parser("start", help="Spawn a background daemon")
+    d_start.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    d_start.add_argument("binary", type=str, help="Relative path to binary inside rootfs")
+    d_start.add_argument("--name", "-n", type=str, default=None, help="Custom daemon identifier")
+
+    daemon_sub.add_parser("list", help="List all background daemons")
+
+    d_status = daemon_sub.add_parser("status", help="Get daemon status and recent logs")
+    d_status.add_argument("name", type=str, help="Daemon name")
+
+    d_stop = daemon_sub.add_parser("stop", help="Stop a background daemon")
+    d_stop.add_argument("name", type=str, help="Daemon name")
 
     args = parser.parse_args()
 
@@ -283,6 +303,37 @@ def main() -> None:
         print(f"[+] Created Device Nodes:     {', '.join(report.created_nodes)}")
         if report.mtd_partitions:
             print(f"[+] Mock MTD Partitions:     {', '.join(report.mtd_partitions)}")
+
+    elif args.command == "daemon":
+        mgr = DaemonManager()
+        if args.daemon_action == "start":
+            d_proc = mgr.spawn(args.rootfs, args.binary, name=args.name)
+            print(f"[+] Started daemon '{d_proc.name}' with PID {d_proc.pid}")
+            print(f"[+] Streaming logs to: {d_proc.log_file}")
+        elif args.daemon_action == "list":
+            daemons = mgr.list_active()
+            print(f"[*] Total Tracked Daemons: {len(daemons)}")
+            for d in daemons:
+                state = "ALIVE" if d.is_alive else "STOPPED"
+                print(f"    - {d.name:<15} (PID: {d.pid:<6}) [{state}] Uptime: {d.uptime_seconds}s")
+        elif args.daemon_action == "status":
+            st = mgr.poll(args.name)
+            if not st:
+                print(f"[-] No daemon found with name: {args.name}", file=sys.stderr)
+                sys.exit(1)
+            state = "ALIVE" if st.is_alive else "STOPPED"
+            print(f"[+] Daemon:  {st.name} (PID: {st.pid}) [{state}]")
+            print(f"[+] Uptime:  {st.uptime_seconds}s")
+            if st.recent_logs:
+                print("\n[+] Recent Logs:")
+                for line in st.recent_logs:
+                    print(f"    {line}")
+        elif args.daemon_action == "stop":
+            stopped = mgr.stop(args.name)
+            if stopped:
+                print(f"[+] Successfully stopped daemon '{args.name}'.")
+            else:
+                print(f"[-] Daemon '{args.name}' not found or already stopped.", file=sys.stderr)
 
     else:
         parser.print_help()
