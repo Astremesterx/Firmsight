@@ -16,6 +16,7 @@ from firmsight.emulator.service_launcher import ServiceLauncher
 from firmsight.extractor.extractor import FirmwareExtractor
 from firmsight.extractor.header_parser import HeaderParser
 from firmsight.extractor.mock_firmware import MockFirmwareBuilder
+from firmsight.extractor.squashfs_handler import SquashFSHandler
 
 
 def main() -> None:
@@ -130,6 +131,14 @@ def main() -> None:
 
     d_stop = daemon_sub.add_parser("stop", help="Stop a background daemon")
     d_stop.add_argument("name", type=str, help="Daemon name")
+
+    # Command: inspect-squashfs
+    squash_parser = subparsers.add_parser(
+        "inspect-squashfs", help="Deep inspection and multi-partition carving of SquashFS superblocks"
+    )
+    squash_parser.add_argument("file", type=str, help="Firmware binary path")
+    squash_parser.add_argument("--carve", action="store_true", help="Carve identified partitions to disk")
+    squash_parser.add_argument("--output-dir", "-o", type=str, default=None, help="Output directory for carved partitions")
 
     args = parser.parse_args()
 
@@ -334,6 +343,36 @@ def main() -> None:
                 print(f"[+] Successfully stopped daemon '{args.name}'.")
             else:
                 print(f"[-] Daemon '{args.name}' not found or already stopped.", file=sys.stderr)
+
+    elif args.command == "inspect-squashfs":
+        target = Path(args.file)
+        if not target.exists():
+            print(f"[-] Error: Firmware file not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        superblocks = SquashFSHandler.scan_superblocks(target)
+        print(f"[*] SquashFS Partition Scan for: {target.name}")
+        print(f"[*] Discovered {len(superblocks)} valid SquashFS superblock(s):\n")
+
+        for i, sb in enumerate(superblocks, 1):
+            print(f"--- Partition #{i} ---")
+            print(f"  Offset:        0x{sb.offset:08X} ({sb.offset} bytes)")
+            print(f"  Version:       SquashFS {sb.version} ({sb.endianness}-endian)")
+            print(f"  Compression:   {sb.compression_name.upper()} (ID: {sb.compression_id})")
+            print(f"  Block Size:    {sb.block_size} bytes ({sb.block_size // 1024} KB)")
+            print(f"  Inodes:        {sb.inode_count}")
+            print(f"  Payload Size:  {sb.bytes_used} bytes ({sb.bytes_used / (1024*1024):.2f} MB)")
+            print(f"  Created:       {sb.creation_time_str}")
+
+            if args.carve:
+                out_dir = Path(args.output_dir) if args.output_dir else target.parent / f"{target.stem}_partitions"
+                res = SquashFSHandler.carve_and_unpack(target, sb, out_dir, partition_idx=i)
+                print(f"  [+] Carved Blob:  {res.carved_blob_path}")
+                if res.unpacked_dir and res.unpacked_dir.exists():
+                    print(f"  [+] Unpacked Dir: {res.unpacked_dir} ({res.file_count} files)")
+                if res.error:
+                    print(f"  [!] Notice:       {res.error}")
+            print()
 
     else:
         parser.print_help()

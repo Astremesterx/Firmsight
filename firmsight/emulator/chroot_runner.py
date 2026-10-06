@@ -105,6 +105,8 @@ class ChrootRunner:
             shim_path = self.rootfs_dir / "usr" / "bin" / qemu_bin
             if shim_path.exists() and os.name != "nt":
                 cmd = ["/bin/sh", str(shim_path), str(binary_path)]
+            elif os.name == "nt":
+                cmd = ["cmd.exe", "/c", "echo", f"[SANDBOX MOCK EXECUTION] {qemu_bin} -L {self.rootfs_dir} {binary_path}"]
             else:
                 cmd = ["echo", f"[SANDBOX MOCK EXECUTION] {qemu_bin} -L {self.rootfs_dir} {binary_path}"]
             if args:

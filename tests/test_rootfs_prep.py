@@ -76,9 +76,10 @@ class TestRootFSPreparer(unittest.TestCase):
 
         qemu_target = self.rootfs / "usr" / "bin" / "qemu-arm-static"
         self.assertTrue(qemu_target.exists())
-        # Verify executable permissions
-        mode = os.stat(qemu_target).st_mode
-        self.assertTrue(bool(mode & 0o111), "QEMU binary must be executable")
+        # Verify executable permissions on POSIX
+        if os.name != "nt":
+            mode = os.stat(qemu_target).st_mode
+            self.assertTrue(bool(mode & 0o111), "QEMU binary must be executable")
 
     def test_dangling_symlink_reporting(self):
         """Verify dangling absolute symlinks inside rootfs are detected and reported."""

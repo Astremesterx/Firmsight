@@ -88,8 +88,13 @@ class DaemonManager:
             shim_path = rootfs / "usr" / "bin" / qemu_bin
             if shim_path.exists() and os.name != "nt":
                 cmd = ["/bin/sh", str(shim_path), str(target_abs)]
+            elif target_abs.exists() and target_abs.is_file() and os.name != "nt" and target_abs.read_bytes()[:2] == b"#!":
+                cmd = ["/bin/sh", str(target_abs)]
             else:
-                cmd = ["echo", f"[SANDBOX DAEMON] {qemu_bin} {bin_path}"]
+                if os.name != "nt":
+                    cmd = ["/bin/sh", "-c", f"echo '[SANDBOX DAEMON] {qemu_bin} {bin_path}'; while true; do sleep 1; done"]
+                else:
+                    cmd = ["powershell", "-NoProfile", "-Command", f"Write-Output '[SANDBOX DAEMON] {qemu_bin} {bin_path}'; while ($true) {{ Start-Sleep -Seconds 1 }}"]
 
         if args:
             cmd.extend(args)
@@ -110,6 +115,7 @@ class DaemonManager:
             stdin=subprocess.DEVNULL,
             start_new_session=True if os.name != "nt" else False,
         )
+        log_handle.close()
 
         daemon_info = {
             "name": daemon_name,
