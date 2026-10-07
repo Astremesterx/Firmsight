@@ -155,7 +155,12 @@ class RootFSPreparer:
                 f"#!/bin/sh\n"
                 f"# FirmSight QEMU Emulation Shim ({qemu_bin})\n"
                 f'echo "[!] Host {qemu_bin} not installed. Run: sudo apt install qemu-user-static"\n'
-                f'exec "$@"\n'
+                f'if [ -f "$1" ] && head -n 1 "$1" 2>/dev/null | grep -q "^#!"; then\n'
+                f'    /bin/sh "$@"\n'
+                f'else\n'
+                f'    echo "[SANDBOX SHIM] Emulated $1 via {qemu_bin}"\n'
+                f'    exit 0\n'
+                f'fi\n'
             )
             dest_bin.write_text(stub_content, encoding="utf-8")
             dest_bin.chmod(0o755)

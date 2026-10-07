@@ -1,6 +1,7 @@
 """Command-line interface for FirmSight."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from firmsight.emulator.chroot_runner import ChrootRunner
 from firmsight.emulator.daemon import DaemonManager
 from firmsight.emulator.device_nodes import DeviceNodeManager
 from firmsight.emulator.health_monitor import HealthMonitor
+from firmsight.emulator.integration_proof import EmulationProofEngine
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.emulator.service_launcher import ServiceLauncher
@@ -139,6 +141,29 @@ def main() -> None:
     squash_parser.add_argument("file", type=str, help="Firmware binary path")
     squash_parser.add_argument("--carve", action="store_true", help="Carve identified partitions to disk")
     squash_parser.add_argument("--output-dir", "-o", type=str, default=None, help="Output directory for carved partitions")
+
+    # Command: emulate-proof (Mid-Review Milestone)
+    proof_parser = subparsers.add_parser(
+        "emulate-proof",
+        help="End-to-End emulation integration verification proof (Mid Review Milestone)",
+    )
+    proof_parser.add_argument(
+        "target",
+        type=str,
+        help="Path to firmware image (.bin) or extracted rootfs directory",
+    )
+    proof_parser.add_argument(
+        "--port", "-p", type=int, default=8080, help="Port to bind web service (default: 8080)"
+    )
+    proof_parser.add_argument(
+        "--binary", "-b", type=str, default=None, help="Explicit service binary override relative to rootfs"
+    )
+    proof_parser.add_argument(
+        "--markdown-out", "-m", type=str, default=None, help="Output path to export Markdown proof report"
+    )
+    proof_parser.add_argument(
+        "--json-out", "-j", type=str, default=None, help="Output path to export JSON proof telemetry"
+    )
 
     args = parser.parse_args()
 
@@ -373,6 +398,56 @@ def main() -> None:
                 if res.error:
                     print(f"  [!] Notice:       {res.error}")
             print()
+
+    elif args.command == "emulate-proof":
+        target = Path(args.target)
+        if not target.exists():
+            print(f"[-] Error: Target path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        engine = EmulationProofEngine()
+        print(f"[*] Initiating End-to-End Emulation Proof for: {target.name}")
+        print("[*] Verifying Phase 1 (Foundations) and Phase 2 (Virtualization) subsystems...\n")
+
+        if target.is_dir():
+            report = engine.verify_rootfs(
+                rootfs_dir=target,
+                port=args.port,
+                binary_override=args.binary,
+            )
+        else:
+            report = engine.verify_firmware(
+                firmware_path=target,
+                port=args.port,
+                binary_override=args.binary,
+            )
+
+        print("--- [MID-REVIEW MILESTONE REPORT] ---")
+        print(f"Target:       {report.target_path.name}")
+        print(f"Arch:         {report.architecture} ({report.endianness}-endian)")
+        print(f"Foreign Mode: {'Yes (QEMU Static)' if report.is_foreign_arch else 'Host Native'}")
+        print(f"Verdict:      {report.overall_verdict}\n")
+
+        print("Verification Matrix:")
+        for c in report.checks:
+            mark = "[PASS]" if c.passed else "[FAIL]"
+            print(f"  {mark:6} {c.check_id:14} [{c.phase}]: {c.title}")
+            print(f"         └─ {c.details}")
+
+        if args.markdown_out:
+            md_path = Path(args.markdown_out)
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(report.export_markdown(), encoding="utf-8")
+            print(f"\n[+] Exported Markdown proof report to: {md_path}")
+
+        if args.json_out:
+            json_path = Path(args.json_out)
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            json_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+            print(f"[+] Exported JSON telemetry to: {json_path}")
+
+        if report.overall_verdict != "PASSED":
+            sys.exit(1)
 
     else:
         parser.print_help()
