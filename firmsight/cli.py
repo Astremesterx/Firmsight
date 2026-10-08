@@ -12,6 +12,7 @@ from firmsight.emulator.daemon import DaemonManager
 from firmsight.emulator.device_nodes import DeviceNodeManager
 from firmsight.emulator.health_monitor import HealthMonitor
 from firmsight.emulator.integration_proof import EmulationProofEngine
+from firmsight.emulator.network_bridge import NetworkBridgeManager
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.emulator.service_launcher import ServiceLauncher
@@ -164,6 +165,24 @@ def main() -> None:
     proof_parser.add_argument(
         "--json-out", "-j", type=str, default=None, help="Output path to export JSON proof telemetry"
     )
+
+    # Command: network (Virtual Network Bridge & TAP Interface Manager)
+    net_parser = subparsers.add_parser("network", help="Virtual Network Bridge & TAP Interface Manager")
+    net_sub = net_parser.add_subparsers(dest="net_action", required=True)
+
+    # network setup
+    n_setup = net_sub.add_parser("setup", help="Provision virtual TAP device and network bridge")
+    n_setup.add_argument("--tap", type=str, default="fs-tap0", help="TAP interface name (default: fs-tap0)")
+    n_setup.add_argument("--bridge", type=str, default="fs-br0", help="Bridge interface name (default: fs-br0)")
+    n_setup.add_argument("--force-shim", action="store_true", help="Force unprivileged shim mode")
+
+    # network status
+    net_sub.add_parser("status", help="Query virtual bridge network status")
+
+    # network teardown
+    n_tear = net_sub.add_parser("teardown", help="Tear down virtual network bridge and TAP devices")
+    n_tear.add_argument("--tap", type=str, default=None, help="TAP interface name")
+    n_tear.add_argument("--bridge", type=str, default=None, help="Bridge interface name")
 
     args = parser.parse_args()
 
@@ -448,6 +467,43 @@ def main() -> None:
 
         if report.overall_verdict != "PASSED":
             sys.exit(1)
+
+    elif args.command == "network":
+        net_mgr = NetworkBridgeManager()
+
+        if args.net_action == "setup":
+            print(f"[*] Provisioning virtual network bridge '{args.bridge}' with TAP '{args.tap}'...")
+            status = net_mgr.setup_bridge_network(
+                tap_name=args.tap,
+                bridge_name=args.bridge,
+                force_shim=args.force_shim,
+            )
+            print(f"[+] Network Bridge Status: {'ACTIVE' if status.is_active else 'INACTIVE'}")
+            print(f"[+] Operational Mode:     {status.mode}")
+            print(f"[+] Bridge Interface:     {status.bridge_name}")
+            for t in status.tap_interfaces:
+                print(f"    └─ TAP Interface:     {t.name} (MAC: {t.mac_address}, MTU: {t.mtu}, State: {t.state})")
+            print(f"[+] State cached in:      {net_mgr.state_file}")
+
+        elif args.net_action == "status":
+            status = net_mgr.get_status()
+            if not status or not status.is_active:
+                print("[-] No active virtual network bridge found in current workspace.")
+            else:
+                print(f"[*] Virtual Network Bridge: {status.bridge_name} [ACTIVE]")
+                print(f"    Mode:       {status.mode}")
+                print(f"    Created At: {status.created_at}")
+                print(f"    Interfaces ({len(status.tap_interfaces)}):")
+                for t in status.tap_interfaces:
+                    print(f"      - {t.name:10} MAC: {t.mac_address} | State: {t.state} | Shim: {t.is_shim}")
+
+        elif args.net_action == "teardown":
+            print("[*] Tearing down virtual network bridge and TAP devices...")
+            success = net_mgr.teardown_bridge_network(tap_name=args.tap, bridge_name=args.bridge)
+            if success:
+                print("[+] Successfully released virtual network interfaces.")
+            else:
+                print("[-] Error releasing network interfaces.", file=sys.stderr)
 
     else:
         parser.print_help()

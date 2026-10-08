@@ -10,6 +10,7 @@ from firmsight.emulator.integration_proof import (
     EmulationProofReport,
     MilestoneCheck,
 )
+from firmsight.emulator.network_bridge import BridgeStatus, NetworkBridgeManager, TAPConfig
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import PreparationReport, RootFSPreparer
 from firmsight.emulator.service_launcher import DiscoveredService, ServiceLaunchResult, ServiceLauncher
@@ -17,6 +18,7 @@ from firmsight.emulator.service_launcher import DiscoveredService, ServiceLaunch
 __all__ = [
     "ArchitectureInfo",
     "ArchitectureResolver",
+    "BridgeStatus",
     "ChrootExecutionResult",
     "ChrootRunner",
     "DaemonManager",
@@ -32,8 +34,10 @@ __all__ = [
     "HealthReport",
     "MilestoneCheck",
     "MockNVRAM",
+    "NetworkBridgeManager",
     "PreparationReport",
     "RootFSPreparer",
     "ServiceLaunchResult",
     "ServiceLauncher",
+    "TAPConfig",
 ]
