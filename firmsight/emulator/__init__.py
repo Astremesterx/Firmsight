@@ -4,6 +4,13 @@ from firmsight.emulator.arch import ArchitectureInfo, ArchitectureResolver
 from firmsight.emulator.chroot_runner import ChrootExecutionResult, ChrootRunner
 from firmsight.emulator.daemon import DaemonManager, DaemonProcess, DaemonStatus
 from firmsight.emulator.device_nodes import DeviceNodeManager, DeviceNodeReport
+from firmsight.emulator.firewall import (
+    FirewallManager,
+    FirewallRule,
+    FirewallStatus,
+    IPTablesManager,
+    PacketEvaluation,
+)
 from firmsight.emulator.health_monitor import HealthIssue, HealthMonitor, HealthReport
 from firmsight.emulator.integration_proof import (
     EmulationProofEngine,
@@ -35,13 +42,18 @@ __all__ = [
     "DiscoveredService",
     "EmulationProofEngine",
     "EmulationProofReport",
+    "FirewallManager",
+    "FirewallRule",
+    "FirewallStatus",
     "HealthIssue",
     "HealthMonitor",
     "HealthReport",
+    "IPTablesManager",
     "MilestoneCheck",
     "MockNVRAM",
     "NetworkBridgeManager",
     "NetworkRouter",
+    "PacketEvaluation",
     "PreparationReport",
     "RootFSPreparer",
     "RouteRule",

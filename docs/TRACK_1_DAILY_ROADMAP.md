@@ -22,8 +22,8 @@
 - [x] **Day 10 (Mid Review Milestone):** End-to-end emulation integration proof engine (`firmsight/emulator/integration_proof.py`): boots foreign ARM/MIPS web server binary in sandboxed environment, injects NVRAM, provisions device nodes, validates health diagnostics without crashes, and generates milestone verification report.
 
 - [x] **Day 11:** Network Bridge Interface (`firmsight/emulator/network_bridge.py`): virtual TAP interface generation, bridge creation, local MAC assignment, unprivileged network shim fallback, and state persistence.
-- [x] **Day 12 (Today):** Subnet & Virtual IP Routing Engine (`firmsight/emulator/network_router.py`): guest-to-host virtual routing, NVRAM subnet alignment (`lan_ipaddr`), host bridge IP binding, and route table emulation.
-- [ ] **Day 13:** IPTables sandbox rules: isolation and packet forwarding to sniffer interface.
+- [x] **Day 12:** Subnet & Virtual IP Routing Engine (`firmsight/emulator/network_router.py`): guest-to-host virtual routing, NVRAM subnet alignment (`lan_ipaddr`), host bridge IP binding, and route table emulation.
+- [x] **Day 13 (Today):** IPTables Sandbox Rules & Sniffer Forwarding (`firmsight/emulator/firewall.py`): isolation policies (WAN egress block), Track 3 sniffer packet cloning (TEE mangle rules), host-to-guest control channel, software packet policy evaluator, and shell script export.
 - [ ] **Day 14:** Integration bridge with Track 3's PCAP capture engine.
 - [ ] **Day 15:** Port forwarding and external curl/HTTP trigger harness for emulated IoT web interface.
 

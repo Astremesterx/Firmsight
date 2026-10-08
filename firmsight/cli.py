@@ -10,6 +10,7 @@ from firmsight.emulator.arch import ArchitectureResolver
 from firmsight.emulator.chroot_runner import ChrootRunner
 from firmsight.emulator.daemon import DaemonManager
 from firmsight.emulator.device_nodes import DeviceNodeManager
+from firmsight.emulator.firewall import FirewallManager
 from firmsight.emulator.health_monitor import HealthMonitor
 from firmsight.emulator.integration_proof import EmulationProofEngine
 from firmsight.emulator.network_bridge import NetworkBridgeManager
@@ -25,6 +26,11 @@ from firmsight.extractor.squashfs_handler import SquashFSHandler
 
 def main() -> None:
     """FirmSight main CLI router."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     ensure_directories()
     parser = argparse.ArgumentParser(
         prog="firmsight",
@@ -198,6 +204,33 @@ def main() -> None:
     # network route-teardown
     r_tear = net_sub.add_parser("route-teardown", help="Tear down virtual IP routing configurations")
     r_tear.add_argument("--bridge", type=str, default=None, help="Bridge interface name")
+
+    # network firewall-apply
+    fw_apply = net_sub.add_parser("firewall-apply", help="Apply sandbox isolation and sniffer forwarding rules")
+    fw_apply.add_argument("--bridge", type=str, default="fs-br0", help="Bridge interface name (default: fs-br0)")
+    fw_apply.add_argument("--sniffer", type=str, default="fs-sniff0", help="Sniffer interface name (default: fs-sniff0)")
+    fw_apply.add_argument("--guest-ip", type=str, default="192.168.1.1", help="Guest IP (default: 192.168.1.1)")
+    fw_apply.add_argument("--host-ip", type=str, default="192.168.1.254", help="Host IP (default: 192.168.1.254)")
+    fw_apply.add_argument("--subnet", type=str, default="192.168.1.0/24", help="Subnet CIDR (default: 192.168.1.0/24)")
+    fw_apply.add_argument("--no-wan-block", action="store_true", help="Disable outbound WAN egress blocking")
+    fw_apply.add_argument("--no-sniffer-mirror", action="store_true", help="Disable Track 3 sniffer packet mirroring")
+    fw_apply.add_argument("--force-shim", action="store_true", help="Force unprivileged shim mode")
+
+    # network firewall-status
+    net_sub.add_parser("firewall-status", help="Query sandbox firewall rules and isolation status")
+
+    # network firewall-flush
+    fw_flush = net_sub.add_parser("firewall-flush", help="Flush sandbox firewall rules and purge state")
+    fw_flush.add_argument("--force-shim", action="store_true", help="Force unprivileged shim mode")
+
+    # network firewall-test
+    fw_test = net_sub.add_parser("firewall-test", help="Simulate packet evaluation against active sandbox rules")
+    fw_test.add_argument("--src", type=str, default="192.168.1.1", help="Source IP (default: 192.168.1.1)")
+    fw_test.add_argument("--dst", type=str, default="8.8.8.8", help="Destination IP (default: 8.8.8.8)")
+    fw_test.add_argument("--port", type=int, default=80, help="Destination port (default: 80)")
+    fw_test.add_argument("--proto", type=str, default="tcp", help="Protocol (default: tcp)")
+    fw_test.add_argument("--in-iface", type=str, default="fs-br0", help="Ingress interface (default: fs-br0)")
+    fw_test.add_argument("--out-iface", type=str, default=None, help="Egress interface (default: None)")
 
     args = parser.parse_args()
 
@@ -559,6 +592,80 @@ def main() -> None:
                 print("[+] Successfully released virtual routing configurations.")
             else:
                 print("[-] Error releasing virtual routing.", file=sys.stderr)
+
+        elif args.net_action == "firewall-apply":
+            fw_mgr = FirewallManager()
+            print(f"[*] Configuring sandbox firewall on bridge '{args.bridge}'...")
+            status = fw_mgr.apply_rules(
+                bridge_name=args.bridge,
+                sniffer_iface=args.sniffer,
+                guest_ip=args.guest_ip,
+                host_ip=args.host_ip,
+                subnet_cidr=args.subnet,
+                block_wan=not args.no_wan_block,
+                mirror_sniffer=not args.no_sniffer_mirror,
+                force_shim=args.force_shim,
+            )
+            print(f"[+] Firewall Status:      {'ACTIVE' if status.is_active else 'INACTIVE'}")
+            print(f"[+] Operational Mode:     {status.mode}")
+            print(f"[+] Security Policy:      {status.policy}")
+            print(f"[+] Bridge Interface:     {status.bridge_name}")
+            print(f"[+] Sniffer Target:       {status.sniffer_interface} (Mirroring: {'ENABLED' if status.packet_mirroring else 'DISABLED'})")
+            print(f"[+] WAN Isolation:        {'ENABLED (Egress Blocked)' if status.wan_isolation else 'DISABLED'}")
+            print(f"[+] Active Rules ({len(status.rules)}):")
+            for r in status.rules:
+                proto = f"p:{r.protocol}" if r.protocol != "all" else "all"
+                port = f"dport:{r.dport}" if r.dport else ""
+                print(f"    └─ [{r.table.upper()}:{r.chain}] {proto} {port} -> {r.action} ({r.comment})")
+            print(f"[+] Generated Script:     {fw_mgr.script_file}")
+
+        elif args.net_action == "firewall-status":
+            fw_mgr = FirewallManager()
+            status = fw_mgr.get_status()
+            if not status or not status.is_active:
+                print("[-] No active sandbox firewall rules found in current workspace.")
+            else:
+                print(f"[*] FirmSight Sandbox Firewall: {status.bridge_name} [ACTIVE]")
+                print(f"    Mode:             {status.mode}")
+                print(f"    Policy:           {status.policy}")
+                print(f"    Host IP:          {status.host_ip}")
+                print(f"    Guest IP:         {status.guest_ip}")
+                print(f"    Subnet CIDR:      {status.subnet_cidr}")
+                print(f"    WAN Isolation:    {status.wan_isolation}")
+                print(f"    Sniffer Target:   {status.sniffer_interface} (Mirroring: {status.packet_mirroring})")
+                print(f"    Created At:       {status.created_at}")
+                print(f"    Total Rules:      {len(status.rules)}")
+                for r in status.rules:
+                    proto = f"proto={r.protocol}" if r.protocol != "all" else "all"
+                    port = f"port={r.dport}" if r.dport else ""
+                    print(f"      - {r.chain:<11} {proto:<10} {port:<10} -> {r.action:<6} | {r.comment}")
+
+        elif args.net_action == "firewall-flush":
+            fw_mgr = FirewallManager()
+            print("[*] Flushing sandbox firewall rules and clearing state...")
+            success = fw_mgr.flush_rules(force_shim=args.force_shim)
+            if success:
+                print("[+] Successfully flushed sandbox firewall rules.")
+            else:
+                print("[-] Error flushing firewall rules.", file=sys.stderr)
+
+        elif args.net_action == "firewall-test":
+            fw_mgr = FirewallManager()
+            eval_res = fw_mgr.evaluate_packet(
+                source_ip=args.src,
+                dest_ip=args.dst,
+                protocol=args.proto,
+                dest_port=args.port,
+                in_interface=args.in_iface,
+                out_interface=args.out_iface,
+            )
+            print("--- [SANDBOX PACKET EVALUATION RESULT] ---")
+            print(f"Flow:        {eval_res.source_ip} -> {eval_res.dest_ip}:{eval_res.dest_port} ({eval_res.protocol.upper()})")
+            print(f"Interface:   {eval_res.in_interface} -> {eval_res.out_interface or 'N/A'}")
+            print(f"Verdict:     {eval_res.verdict}")
+            print(f"Sniffer TEE: {'MIRRORED to ' + str(eval_res.sniffer_interface) if eval_res.mirrored_to_sniffer else 'NO'}")
+            print(f"Rule:        {eval_res.matched_rule or 'N/A'}")
+            print(f"Reason:      {eval_res.reason}")
 
     else:
         parser.print_help()
