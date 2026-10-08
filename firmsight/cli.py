@@ -13,6 +13,7 @@ from firmsight.emulator.device_nodes import DeviceNodeManager
 from firmsight.emulator.health_monitor import HealthMonitor
 from firmsight.emulator.integration_proof import EmulationProofEngine
 from firmsight.emulator.network_bridge import NetworkBridgeManager
+from firmsight.emulator.network_router import NetworkRouter
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.emulator.service_launcher import ServiceLauncher
@@ -183,6 +184,20 @@ def main() -> None:
     n_tear = net_sub.add_parser("teardown", help="Tear down virtual network bridge and TAP devices")
     n_tear.add_argument("--tap", type=str, default=None, help="TAP interface name")
     n_tear.add_argument("--bridge", type=str, default=None, help="Bridge interface name")
+
+    # network route-setup
+    r_setup = net_sub.add_parser("route-setup", help="Configure subnet and guest-to-host virtual routing")
+    r_setup.add_argument("--bridge", type=str, default="fs-br0", help="Bridge interface name (default: fs-br0)")
+    r_setup.add_argument("--guest-ip", type=str, default="192.168.1.1", help="Emulated IoT router IP (default: 192.168.1.1)")
+    r_setup.add_argument("--netmask", type=str, default="255.255.255.0", help="Subnet mask (default: 255.255.255.0)")
+    r_setup.add_argument("--force-shim", action="store_true", help="Force unprivileged shim mode")
+
+    # network route-status
+    net_sub.add_parser("route-status", help="Query virtual routing and subnet configurations")
+
+    # network route-teardown
+    r_tear = net_sub.add_parser("route-teardown", help="Tear down virtual IP routing configurations")
+    r_tear.add_argument("--bridge", type=str, default=None, help="Bridge interface name")
 
     args = parser.parse_args()
 
@@ -504,6 +519,46 @@ def main() -> None:
                 print("[+] Successfully released virtual network interfaces.")
             else:
                 print("[-] Error releasing network interfaces.", file=sys.stderr)
+
+        elif args.net_action == "route-setup":
+            r_mgr = NetworkRouter()
+            sub = r_mgr.calculate_subnet(gateway_ip=args.guest_ip, netmask=args.netmask)
+            print(f"[*] Configuring virtual subnet {sub.cidr} on bridge '{args.bridge}'...")
+            r_status = r_mgr.setup_guest_routing(bridge_name=args.bridge, subnet=sub, force_shim=args.force_shim)
+            print(f"[+] Routing Status:       {'ACTIVE' if r_status.is_active else 'INACTIVE'}")
+            print(f"[+] Operational Mode:     {r_status.mode}")
+            print(f"[+] Subnet CIDR:          {r_status.subnet.cidr}")
+            print(f"[+] Host Bridge IP:       {r_status.subnet.host_ip} ({r_status.subnet.netmask})")
+            print(f"[+] Guest Gateway IP:     {r_status.subnet.gateway_ip}")
+            print(f"[+] IPv4 Forwarding:      {'ENABLED' if r_status.forwarding_enabled else 'DISABLED/SHIM'}")
+            print(f"[+] Route Rules ({len(r_status.routes)}):")
+            for r in r_status.routes:
+                print(f"    └─ Dest: {r.destination:16} via {r.gateway:15} dev {r.interface} (metric {r.metric})")
+
+        elif args.net_action == "route-status":
+            r_mgr = NetworkRouter()
+            r_status = r_mgr.get_routing_status()
+            if not r_status or not r_status.is_active:
+                print("[-] No active virtual routing configuration found in current workspace.")
+            else:
+                print(f"[*] Virtual Subnet Routing: {r_status.bridge_name} [ACTIVE]")
+                print(f"    Mode:          {r_status.mode}")
+                print(f"    Subnet:        {r_status.subnet.cidr}")
+                print(f"    Host IP:       {r_status.subnet.host_ip}")
+                print(f"    Guest IP:      {r_status.subnet.gateway_ip}")
+                print(f"    Forwarding:    {r_status.forwarding_enabled}")
+                print(f"    Routes ({len(r_status.routes)}):")
+                for r in r_status.routes:
+                    print(f"      - {r.destination:16} via {r.gateway:15} dev {r.interface} (metric {r.metric})")
+
+        elif args.net_action == "route-teardown":
+            r_mgr = NetworkRouter()
+            print("[*] Tearing down virtual IP routing rules...")
+            success = r_mgr.teardown_guest_routing(bridge_name=args.bridge)
+            if success:
+                print("[+] Successfully released virtual routing configurations.")
+            else:
+                print("[-] Error releasing virtual routing.", file=sys.stderr)
 
     else:
         parser.print_help()

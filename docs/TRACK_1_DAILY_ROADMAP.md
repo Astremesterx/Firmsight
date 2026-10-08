@@ -21,9 +21,8 @@
 - [x] **Day 9:** Extraction Engine v2 (`firmsight/extractor/squashfs_handler.py`): advanced multi-partition SquashFS superblock parser (v3/v4), compression detection, and partition carver.
 - [x] **Day 10 (Mid Review Milestone):** End-to-end emulation integration proof engine (`firmsight/emulator/integration_proof.py`): boots foreign ARM/MIPS web server binary in sandboxed environment, injects NVRAM, provisions device nodes, validates health diagnostics without crashes, and generates milestone verification report.
 
-### Phase 3: Network Virtualization & Sandboxing (Days 11–15)
-- [x] **Day 11 (Today):** Network Bridge Interface (`firmsight/emulator/network_bridge.py`): virtual TAP interface generation, bridge creation, local MAC assignment, unprivileged network shim fallback, and state persistence.
-- [ ] **Day 12:** Subnet & IP configuration for guest-to-host virtual routing.
+- [x] **Day 11:** Network Bridge Interface (`firmsight/emulator/network_bridge.py`): virtual TAP interface generation, bridge creation, local MAC assignment, unprivileged network shim fallback, and state persistence.
+- [x] **Day 12 (Today):** Subnet & Virtual IP Routing Engine (`firmsight/emulator/network_router.py`): guest-to-host virtual routing, NVRAM subnet alignment (`lan_ipaddr`), host bridge IP binding, and route table emulation.
 - [ ] **Day 13:** IPTables sandbox rules: isolation and packet forwarding to sniffer interface.
 - [ ] **Day 14:** Integration bridge with Track 3's PCAP capture engine.
 - [ ] **Day 15:** Port forwarding and external curl/HTTP trigger harness for emulated IoT web interface.

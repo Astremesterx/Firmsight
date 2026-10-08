@@ -11,6 +11,12 @@ from firmsight.emulator.integration_proof import (
     MilestoneCheck,
 )
 from firmsight.emulator.network_bridge import BridgeStatus, NetworkBridgeManager, TAPConfig
+from firmsight.emulator.network_router import (
+    NetworkRouter,
+    RouteRule,
+    RoutingStatus,
+    SubnetConfig,
+)
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.rootfs_prep import PreparationReport, RootFSPreparer
 from firmsight.emulator.service_launcher import DiscoveredService, ServiceLaunchResult, ServiceLauncher
@@ -35,9 +41,13 @@ __all__ = [
     "MilestoneCheck",
     "MockNVRAM",
     "NetworkBridgeManager",
+    "NetworkRouter",
     "PreparationReport",
     "RootFSPreparer",
+    "RouteRule",
+    "RoutingStatus",
     "ServiceLaunchResult",
     "ServiceLauncher",
+    "SubnetConfig",
     "TAPConfig",
 ]
