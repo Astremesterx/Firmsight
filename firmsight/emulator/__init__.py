@@ -25,6 +25,11 @@ from firmsight.emulator.network_router import (
     SubnetConfig,
 )
 from firmsight.emulator.nvram import MockNVRAM
+from firmsight.emulator.pcap_bridge import (
+    CaptureSessionInfo,
+    PCAPBridge,
+    SnifferBridge,
+)
 from firmsight.emulator.rootfs_prep import PreparationReport, RootFSPreparer
 from firmsight.emulator.service_launcher import DiscoveredService, ServiceLaunchResult, ServiceLauncher
 
@@ -32,6 +37,7 @@ __all__ = [
     "ArchitectureInfo",
     "ArchitectureResolver",
     "BridgeStatus",
+    "CaptureSessionInfo",
     "ChrootExecutionResult",
     "ChrootRunner",
     "DaemonManager",
@@ -53,6 +59,7 @@ __all__ = [
     "MockNVRAM",
     "NetworkBridgeManager",
     "NetworkRouter",
+    "PCAPBridge",
     "PacketEvaluation",
     "PreparationReport",
     "RootFSPreparer",
@@ -60,6 +67,7 @@ __all__ = [
     "RoutingStatus",
     "ServiceLaunchResult",
     "ServiceLauncher",
+    "SnifferBridge",
     "SubnetConfig",
     "TAPConfig",
 ]

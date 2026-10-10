@@ -16,6 +16,7 @@ from firmsight.emulator.integration_proof import EmulationProofEngine
 from firmsight.emulator.network_bridge import NetworkBridgeManager
 from firmsight.emulator.network_router import NetworkRouter
 from firmsight.emulator.nvram import MockNVRAM
+from firmsight.emulator.pcap_bridge import PCAPBridge
 from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.emulator.service_launcher import ServiceLauncher
 from firmsight.extractor.extractor import FirmwareExtractor
@@ -231,6 +232,34 @@ def main() -> None:
     fw_test.add_argument("--proto", type=str, default="tcp", help="Protocol (default: tcp)")
     fw_test.add_argument("--in-iface", type=str, default="fs-br0", help="Ingress interface (default: fs-br0)")
     fw_test.add_argument("--out-iface", type=str, default=None, help="Egress interface (default: None)")
+
+    # network capture-start
+    cap_start = net_sub.add_parser("capture-start", help="Start PCAP packet capture on sniffer interface")
+    cap_start.add_argument("--interface", type=str, default="fs-sniff0", help="Sniffer interface (default: fs-sniff0)")
+    cap_start.add_argument("--bridge", type=str, default="fs-br0", help="Bridge interface (default: fs-br0)")
+    cap_start.add_argument("--output", type=str, default=None, help="Output .pcap file path")
+    cap_start.add_argument("--filter", type=str, default=None, help="BPF capture filter expression")
+    cap_start.add_argument("--guest-ip", type=str, default="192.168.1.1", help="Guest IP (default: 192.168.1.1)")
+    cap_start.add_argument("--host-ip", type=str, default="192.168.1.254", help="Host IP (default: 192.168.1.254)")
+    cap_start.add_argument("--force-shim", action="store_true", help="Force unprivileged synthesizer shim mode")
+
+    # network capture-stop
+    net_sub.add_parser("capture-stop", help="Stop active PCAP packet capture session")
+
+    # network capture-status
+    net_sub.add_parser("capture-status", help="Query active PCAP packet capture session and telemetry")
+
+    # network capture-inject
+    cap_inj = net_sub.add_parser("capture-inject", help="Inject a synthetic packet into the active PCAP capture")
+    cap_inj.add_argument("--type", type=str, default="http_request", choices=["http_request", "http_response", "dns_query", "icmp_ping", "c2_beacon"], help="Packet type")
+    cap_inj.add_argument("--src", type=str, default=None, help="Source IP override")
+    cap_inj.add_argument("--dst", type=str, default=None, help="Destination IP override")
+    cap_inj.add_argument("--port", type=int, default=80, help="Destination port")
+
+    # network capture-flow
+    cap_flow = net_sub.add_parser("capture-flow", help="Synthesize and inject realistic IoT traffic flows into PCAP")
+    cap_flow.add_argument("--count", type=int, default=5, help="Number of packets to synthesize (default: 5)")
+    cap_flow.add_argument("--inject-c2", action="store_true", help="Inject simulated malicious C2 beacon packet")
 
     args = parser.parse_args()
 
@@ -666,6 +695,94 @@ def main() -> None:
             print(f"Sniffer TEE: {'MIRRORED to ' + str(eval_res.sniffer_interface) if eval_res.mirrored_to_sniffer else 'NO'}")
             print(f"Rule:        {eval_res.matched_rule or 'N/A'}")
             print(f"Reason:      {eval_res.reason}")
+
+        elif args.net_action == "capture-start":
+            pcap_mgr = PCAPBridge()
+            print(f"[*] Initializing PCAP packet capture on interface '{args.interface}'...")
+            session = pcap_mgr.start_capture(
+                interface=args.interface,
+                bridge_name=args.bridge,
+                output_pcap=args.output,
+                filter_expr=args.filter,
+                guest_ip=args.guest_ip,
+                host_ip=args.host_ip,
+                force_shim=args.force_shim,
+            )
+            print(f"[+] Capture Session:   {session.session_id} [ACTIVE]")
+            print(f"[+] Operational Mode:  {session.mode}")
+            print(f"[+] Sniffer Interface: {session.interface} (Bridge: {session.bridge_name})")
+            print(f"[+] Output PCAP:       {session.pcap_file}")
+            print(f"[+] Track 3 Manifest:  {session.manifest_file}")
+            if session.filter_expr:
+                print(f"[+] BPF Filter:        {session.filter_expr}")
+
+        elif args.net_action == "capture-stop":
+            pcap_mgr = PCAPBridge()
+            print("[*] Stopping active PCAP packet capture session...")
+            session = pcap_mgr.stop_capture()
+            if not session:
+                print("[-] No active PCAP capture session found in current workspace.")
+            else:
+                print(f"[+] Successfully stopped capture session: {session.session_id}")
+                print(f"[+] Total Packets:    {session.packet_count}")
+                print(f"[+] Total Bytes:      {session.byte_count}")
+                print(f"[+] Saved PCAP File:  {session.pcap_file}")
+                print(f"[+] Track 3 Manifest: {session.manifest_file}")
+
+        elif args.net_action == "capture-status":
+            pcap_mgr = PCAPBridge()
+            session = pcap_mgr.get_active_session()
+            if not session:
+                manifest_data = pcap_mgr.export_track3_manifest()
+                if manifest_data:
+                    print(f"[*] Most Recent PCAP Capture Session: {manifest_data.get('session_id')} [INACTIVE]")
+                    print(f"    Mode:          {manifest_data.get('mode')}")
+                    print(f"    Interface:     {manifest_data.get('interface')} ({manifest_data.get('bridge_name')})")
+                    print(f"    Packets:       {manifest_data.get('packet_count')}")
+                    print(f"    Bytes:         {manifest_data.get('byte_count')}")
+                    print(f"    PCAP File:     {manifest_data.get('pcap_file')}")
+                    print(f"    Protocols:     {manifest_data.get('protocols')}")
+                else:
+                    print("[-] No active or recorded PCAP capture session found.")
+            else:
+                print(f"[*] Active PCAP Capture Session: {session.session_id} [ACTIVE]")
+                print(f"    Mode:          {session.mode}")
+                print(f"    Interface:     {session.interface} (Bridge: {session.bridge_name})")
+                print(f"    Packets:       {session.packet_count}")
+                print(f"    Bytes:         {session.byte_count}")
+                print(f"    PCAP File:     {session.pcap_file}")
+                print(f"    Protocols:     {session.protocols}")
+                print(f"    Started At:    {session.start_time}")
+
+        elif args.net_action == "capture-inject":
+            pcap_mgr = PCAPBridge()
+            session = pcap_mgr.get_active_session()
+            if not session:
+                print("[-] No active capture session. Starting background session first...")
+                session = pcap_mgr.start_capture()
+            success = pcap_mgr.inject_packet(
+                packet_type=args.type,
+                src_ip=args.src,
+                dst_ip=args.dst,
+                dst_port=args.port,
+            )
+            if success:
+                print(f"[+] Injected synthetic packet '{args.type}' into {session.pcap_file}")
+                print(f"[+] Updated packet count: {session.packet_count}")
+            else:
+                print("[-] Failed to inject packet.", file=sys.stderr)
+
+        elif args.net_action == "capture-flow":
+            pcap_mgr = PCAPBridge()
+            session = pcap_mgr.get_active_session()
+            if not session:
+                print("[-] No active capture session. Starting background session first...")
+                session = pcap_mgr.start_capture()
+            print(f"[*] Synthesizing realistic IoT traffic flow ({args.count} packets, inject_c2={args.inject_c2})...")
+            count = pcap_mgr.inject_traffic_flow(count=args.count, inject_c2=args.inject_c2)
+            print(f"[+] Successfully synthesized and recorded {count} packets.")
+            print(f"[+] Output PCAP:      {session.pcap_file}")
+            print(f"[+] Protocol stats:   {session.protocols}")
 
     else:
         parser.print_help()
