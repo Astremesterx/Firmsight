@@ -30,6 +30,13 @@ from firmsight.emulator.pcap_bridge import (
     PCAPBridge,
     SnifferBridge,
 )
+from firmsight.emulator.port_forward import (
+    HTTPProbeResult,
+    HTTPTriggerHarness,
+    PortForwardRule,
+    PortForwardStatus,
+    PortForwarder,
+)
 from firmsight.emulator.rootfs_prep import PreparationReport, RootFSPreparer
 from firmsight.emulator.service_launcher import DiscoveredService, ServiceLaunchResult, ServiceLauncher
 
@@ -54,6 +61,8 @@ __all__ = [
     "HealthIssue",
     "HealthMonitor",
     "HealthReport",
+    "HTTPProbeResult",
+    "HTTPTriggerHarness",
     "IPTablesManager",
     "MilestoneCheck",
     "MockNVRAM",
@@ -61,6 +70,9 @@ __all__ = [
     "NetworkRouter",
     "PCAPBridge",
     "PacketEvaluation",
+    "PortForwardRule",
+    "PortForwardStatus",
+    "PortForwarder",
     "PreparationReport",
     "RootFSPreparer",
     "RouteRule",

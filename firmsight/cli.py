@@ -17,6 +17,7 @@ from firmsight.emulator.network_bridge import NetworkBridgeManager
 from firmsight.emulator.network_router import NetworkRouter
 from firmsight.emulator.nvram import MockNVRAM
 from firmsight.emulator.pcap_bridge import PCAPBridge
+from firmsight.emulator.port_forward import HTTPTriggerHarness, PortForwarder
 from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.emulator.service_launcher import ServiceLauncher
 from firmsight.extractor.extractor import FirmwareExtractor
@@ -260,6 +261,32 @@ def main() -> None:
     cap_flow = net_sub.add_parser("capture-flow", help="Synthesize and inject realistic IoT traffic flows into PCAP")
     cap_flow.add_argument("--count", type=int, default=5, help="Number of packets to synthesize (default: 5)")
     cap_flow.add_argument("--inject-c2", action="store_true", help="Inject simulated malicious C2 beacon packet")
+
+    # network forward-add
+    pf_add = net_sub.add_parser("forward-add", help="Add port forwarding rule from host to emulated guest")
+    pf_add.add_argument("--host-port", type=int, required=True, help="Host port to bind on localhost")
+    pf_add.add_argument("--guest-port", type=int, default=80, help="Target emulated device port (default: 80)")
+    pf_add.add_argument("--host-ip", type=str, default="127.0.0.1", help="Host interface IP (default: 127.0.0.1)")
+    pf_add.add_argument("--guest-ip", type=str, default="192.168.1.1", help="Guest router IP (default: 192.168.1.1)")
+    pf_add.add_argument("--mode", type=str, choices=["auto", "socket-proxy", "iptables-nat"], default="auto", help="Forwarding mode")
+    pf_add.add_argument("--force-shim", action="store_true", help="Force unprivileged socket-proxy mode")
+
+    # network forward-list
+    net_sub.add_parser("forward-list", help="List all active host-to-guest port forwarding channels")
+
+    # network forward-remove
+    pf_rm = net_sub.add_parser("forward-remove", help="Remove an active port forwarding rule")
+    pf_rm.add_argument("--rule-id", type=str, required=True, help="ID of rule to remove (e.g. pf-8080-80)")
+
+    # network http-probe
+    http_pb = net_sub.add_parser("http-probe", help="Execute an external HTTP probe against forwarded web interface")
+    http_pb.add_argument("--host-port", type=int, default=8080, help="Host forwarded port (default: 8080)")
+    http_pb.add_argument("--path", type=str, default="/", help="URI path to probe (default: /)")
+    http_pb.add_argument("--method", type=str, default="GET", choices=["GET", "POST", "HEAD"], help="HTTP method")
+
+    # network http-scan
+    http_sc = net_sub.add_parser("http-scan", help="Run automated diagnostic endpoint scan on emulated web daemon")
+    http_sc.add_argument("--host-port", type=int, default=8080, help="Host forwarded port (default: 8080)")
 
     args = parser.parse_args()
 
@@ -783,6 +810,68 @@ def main() -> None:
             print(f"[+] Successfully synthesized and recorded {count} packets.")
             print(f"[+] Output PCAP:      {session.pcap_file}")
             print(f"[+] Protocol stats:   {session.protocols}")
+
+        elif args.net_action == "forward-add":
+            pf = PortForwarder()
+            rule = pf.add_forward(
+                host_port=args.host_port,
+                guest_port=args.guest_port,
+                host_ip=args.host_ip,
+                guest_ip=args.guest_ip,
+                mode=args.mode,
+                force_shim=args.force_shim,
+            )
+            print(f"[+] Configured Port Forward: {rule.rule_id} [ACTIVE]")
+            print(f"[+] Forwarding Mapping:     {rule.host_ip}:{rule.host_port} -> {rule.guest_ip}:{rule.guest_port}")
+            print(f"[+] Operational Mode:       {rule.mode}")
+            print(f"[+] Quick Curl Verification: {rule.to_curl_command()}")
+
+        elif args.net_action == "forward-list":
+            pf = PortForwarder()
+            forwards = pf.list_forwards()
+            if not forwards:
+                print("[-] No active port forwarders configured in current workspace.")
+            else:
+                print(f"[*] Active Port Forwarders ({len(forwards)}):")
+                for r in forwards:
+                    print(f"    - [{r.rule_id}] {r.host_ip}:{r.host_port} -> {r.guest_ip}:{r.guest_port} ({r.mode}) | Conns: {r.connections_handled}")
+
+        elif args.net_action == "forward-remove":
+            pf = PortForwarder()
+            success = pf.remove_forward(args.rule_id)
+            if success:
+                print(f"[+] Removed port forward rule: {args.rule_id}")
+            else:
+                print(f"[-] Rule {args.rule_id} not found or failed to remove.", file=sys.stderr)
+
+        elif args.net_action == "http-probe":
+            harness = HTTPTriggerHarness()
+            print(f"[*] Sending external HTTP {args.method} probe to port {args.host_port} (path: {args.path})...")
+            res = harness.probe_endpoint(target=args.host_port, path=args.path, method=args.method)
+            print("--- [HTTP PROBE RESULT] ---")
+            print(f"URL:          {res.url}")
+            print(f"Status Code:  {res.status_code or 'UNREACHABLE'}")
+            print(f"Latency:      {res.response_time_ms} ms")
+            if res.server_banner:
+                print(f"Server:       {res.server_banner}")
+            if res.error:
+                print(f"Notice:       {res.error}")
+            print(f"Curl Command: {res.curl_command}")
+            if res.body_snippet:
+                print(f"\nResponse Preview:\n{res.body_snippet.strip()}")
+
+        elif args.net_action == "http-scan":
+            harness = HTTPTriggerHarness()
+            print(f"[*] Launching automated diagnostic HTTP scan against emulated router port {args.host_port}...")
+            results = harness.run_diagnostic_scan(host_port=args.host_port)
+            print("----------------------------------------------------------------------")
+            print(f"{'Endpoint':<25} {'Status':<10} {'Latency':<12} {'Server Banner':<15}")
+            print("----------------------------------------------------------------------")
+            for r in results:
+                status_str = str(r.status_code) if r.status_code else "FAIL"
+                server_str = r.server_banner or "N/A"
+                print(f"{r.url.split(str(args.host_port))[-1]:<25} {status_str:<10} {r.response_time_ms:<6} ms    {server_str:<15}")
+            print("----------------------------------------------------------------------")
 
     else:
         parser.print_help()
