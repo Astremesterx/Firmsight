@@ -20,6 +20,27 @@ def parse_elf(file_path):
         2: "Big Endian"
     }.get(endian, "Unknown"))
 
+    if endian in (1, 2):
+        machine = int.from_bytes(
+            header[18:20],
+            byteorder="little" if endian == 1 else "big"
+        )
+
+        architectures = {
+            3: "x86",
+            8: "MIPS",
+            40: "ARM",
+            62: "x86-64",
+            183: "AArch64"
+        }
+
+        print(
+            "Machine architecture:",
+            architectures.get(machine, f"Unknown ({machine})")
+        )
+    else:
+        print("Machine architecture: Unknown")
+
 
 if __name__ == "__main__":
     print("FirmSight ELF Parser")
