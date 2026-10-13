@@ -16,6 +16,7 @@ from firmsight.emulator.integration_proof import EmulationProofEngine
 from firmsight.emulator.network_bridge import NetworkBridgeManager
 from firmsight.emulator.network_router import NetworkRouter
 from firmsight.emulator.nvram import MockNVRAM
+from firmsight.emulator.orchestrator import MasterOrchestrator, OrchestrationConfig
 from firmsight.emulator.pcap_bridge import PCAPBridge
 from firmsight.emulator.port_forward import HTTPTriggerHarness, PortForwarder
 from firmsight.emulator.rootfs_prep import RootFSPreparer
@@ -287,6 +288,41 @@ def main() -> None:
     # network http-scan
     http_sc = net_sub.add_parser("http-scan", help="Run automated diagnostic endpoint scan on emulated web daemon")
     http_sc.add_argument("--host-port", type=int, default=8080, help="Host forwarded port (default: 8080)")
+
+    # Command: run (Master One-Command Pipeline)
+    run_parser = subparsers.add_parser(
+        "run", help="One-command end-to-end firmware emulation, virtualization & web sandbox"
+    )
+    run_parser.add_argument(
+        "target", type=str, help="Firmware image (.bin) or extracted rootfs directory"
+    )
+    run_parser.add_argument(
+        "--host-port", "-p", type=int, default=8080, help="Host port to forward web interface (default: 8080)"
+    )
+    run_parser.add_argument(
+        "--guest-port", type=int, default=80, help="Target emulated device service port (default: 80)"
+    )
+    run_parser.add_argument(
+        "--binary", "-b", type=str, default=None, help="Explicit web daemon binary override relative to rootfs"
+    )
+    run_parser.add_argument(
+        "--no-capture", action="store_true", help="Disable Track 3 PCAP packet capture"
+    )
+    run_parser.add_argument(
+        "--no-firewall", action="store_true", help="Disable sandbox firewall isolation"
+    )
+    run_parser.add_argument(
+        "--no-probe", action="store_true", help="Skip automated post-launch HTTP health probe"
+    )
+    run_parser.add_argument(
+        "--force-shim", action="store_true", help="Force unprivileged simulation mode"
+    )
+    run_parser.add_argument(
+        "--markdown-out", "-m", type=str, default=None, help="Path to export Markdown execution report"
+    )
+    run_parser.add_argument(
+        "--json-out", "-j", type=str, default=None, help="Path to export JSON execution telemetry"
+    )
 
     args = parser.parse_args()
 
@@ -872,6 +908,67 @@ def main() -> None:
                 server_str = r.server_banner or "N/A"
                 print(f"{r.url.split(str(args.host_port))[-1]:<25} {status_str:<10} {r.response_time_ms:<6} ms    {server_str:<15}")
             print("----------------------------------------------------------------------")
+
+    elif args.command == "run":
+        target = Path(args.target)
+        if not target.exists():
+            print(f"[-] Error: Target path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: One-Command IoT Firmware Emulation & Analysis Sandbox   ]")
+        print("[======================================================================]")
+        print(f"[*] Target: {target.name} ({'Directory RootFS' if target.is_dir() else 'Firmware Binary'})")
+        print(f"[*] Forwarding Web Interface to Host Port: {args.host_port} -> Guest Port: {args.guest_port}")
+        print("[*] Executing 10-Stage Pipeline (Phase 1 -> Phase 2 -> Phase 3)...\n")
+
+        cfg = OrchestrationConfig(
+            target_path=target,
+            host_port=args.host_port,
+            guest_port=args.guest_port,
+            enable_capture=not args.no_capture,
+            enable_firewall=not args.no_firewall,
+            probe_after_launch=not args.no_probe,
+            force_shim=args.force_shim,
+            service_binary_override=args.binary,
+        )
+
+        orchestrator = MasterOrchestrator()
+        result = orchestrator.run(cfg)
+
+        for s in result.stages:
+            badge = "[PASS]" if s.status == "PASSED" else ("[SKIP]" if s.status == "SKIPPED" else "[FAIL]")
+            print(f"  {badge:6} Stage {s.stage_id:<2}: {s.name:<52} ({s.duration_seconds:.2f}s)")
+            print(f"         └─ {s.details}")
+
+        print("\n[====================== [EMULATION SUMMARY] ======================]")
+        print(f"Target:        {result.target_name}")
+        print(f"Architecture:  {result.architecture} ({result.endianness}-endian)")
+        print(f"Verdict:       {result.overall_status}")
+        print(f"Duration:      {result.total_duration_seconds:.2f} seconds")
+        print(f"Web Dashboard: {result.forwarded_url}")
+        print(f"Verification:  {result.curl_command}")
+        if result.pcap_capture_file:
+            print(f"PCAP Capture:  {result.pcap_capture_file}")
+        if result.probe_result:
+            p_status = result.probe_result.status_code or "UNREACHABLE"
+            print(f"Health Probe:  HTTP {p_status} (Latency: {result.probe_result.response_time_ms}ms | Server: {result.probe_result.server_banner or 'N/A'})")
+        print("[==================================================================]")
+
+        if args.markdown_out:
+            md_path = Path(args.markdown_out)
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(result.export_markdown(), encoding="utf-8")
+            print(f"\n[+] Exported Markdown summary report to: {md_path}")
+
+        if args.json_out:
+            json_path = Path(args.json_out)
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            json_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+            print(f"[+] Exported JSON execution telemetry to: {json_path}")
+
+        if result.overall_status == "FAILED":
+            sys.exit(1)
 
     else:
         parser.print_help()

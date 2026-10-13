@@ -43,6 +43,7 @@ sandbox_workspace/
 extracted_firmware/
 firmware_samples/
 sandbox_root/
+network/
 *.pcap
 *.pcapng
 *.img
