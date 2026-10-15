@@ -42,6 +42,7 @@ from firmsight.emulator.service_launcher import (
     ServiceLaunchResult,
     ServiceLauncher,
 )
+from firmsight.emulator.tracer_hook import DynamicHookInjector, GDBStubSession
 from firmsight.extractor.extractor import FirmwareExtractor
 
 logger = get_logger("MasterOrchestrator")
@@ -78,6 +79,8 @@ class OrchestrationConfig:
     enable_capture: bool = True
     probe_after_launch: bool = True
     force_shim: bool = False
+    enable_tracing: bool = False
+    gdb_port: Optional[int] = None
     service_binary_override: Optional[str] = None
 
     def to_dict(self) -> Dict:
@@ -100,6 +103,9 @@ class OrchestrationResult:
     service_launched: Optional[str] = None
     forwarded_url: str = ""
     pcap_capture_file: Optional[str] = None
+    trace_manifest_file: Optional[str] = None
+    gdb_connect_command: Optional[str] = None
+    vulnerabilities_found: int = 0
     overall_status: str = "FAILED"        # 'SUCCESS', 'PARTIAL', 'FAILED'
     total_duration_seconds: float = 0.0
     stages: List[OrchestrationStage] = field(default_factory=list)
@@ -126,6 +132,9 @@ class OrchestrationResult:
             "service_launched": self.service_launched,
             "forwarded_url": self.forwarded_url,
             "pcap_capture_file": self.pcap_capture_file,
+            "trace_manifest_file": self.trace_manifest_file,
+            "gdb_connect_command": self.gdb_connect_command,
+            "vulnerabilities_found": self.vulnerabilities_found,
             "overall_status": self.overall_status,
             "total_duration_seconds": self.total_duration_seconds,
             "stages": [s.to_dict() for s in self.stages],
@@ -148,6 +157,13 @@ class OrchestrationResult:
         ]
         if self.pcap_capture_file:
             lines.append(f"- **PCAP Capture File:** `{self.pcap_capture_file}`")
+        if self.trace_manifest_file:
+            lines.extend(["", "## 🔬 Track 2 Dynamic Binary Analysis & Radare2 Tracing", ""])
+            lines.append(f"- **Trace Manifest:** `{self.trace_manifest_file}`")
+            if self.gdb_connect_command:
+                lines.append(f"- **Radare2 Attachment:** `{self.gdb_connect_command}`")
+            if self.vulnerabilities_found > 0:
+                lines.append(f"- **Vulnerabilities Flagged:** `{self.vulnerabilities_found}`")
 
         lines.extend(["", "## Pipeline Execution Stages", ""])
         lines.append("| Stage # | Stage Name | Status | Duration | Details |")
@@ -209,6 +225,9 @@ class MasterOrchestrator:
         arch_info: Optional[ArchitectureInfo] = None
         service_launched: Optional[str] = None
         pcap_file: Optional[str] = None
+        trace_file: Optional[str] = None
+        gdb_connect: Optional[str] = None
+        vulns_detected: int = 0
         probe_res: Optional[HTTPProbeResult] = None
         forward_url = f"http://{config.host_ip}:{config.host_port}/"
         curl_cmd = f"curl -s -i {forward_url}"
@@ -501,6 +520,30 @@ class MasterOrchestrator:
             )
 
         # ------------------------------------------------------------------
+        # Track 2 Dynamic API Hook Injection & Radare2 Tracing
+        # ------------------------------------------------------------------
+        if config.enable_tracing:
+            try:
+                injector = DynamicHookInjector(workspace_dir=self.workspace_dir)
+                target_bin = service_launched or "httpd"
+                bin_candidates = list(rootfs_dir.rglob(target_bin)) if rootfs_dir else []
+                active_bin = bin_candidates[0] if bin_candidates else target_path
+
+                gdb_sess = injector.prepare_gdb_stub(str(active_bin), port=config.gdb_port)
+                trace_events = injector.simulate_trace_for_binary(active_bin)
+                manifest_path = injector.export_manifest(trace_events, session=gdb_sess)
+
+                trace_file = str(manifest_path)
+                gdb_connect = gdb_sess.r2_connect_command
+                vulns_detected = sum(1 for e in trace_events if e.vulnerability_indicator is not None)
+                logger.info(
+                    f"Dynamic tracer armed on port {gdb_sess.gdb_port}; "
+                    f"captured {len(trace_events)} API calls ({vulns_detected} vulnerabilities flagged)."
+                )
+            except Exception as exc:
+                logger.warning(f"Dynamic tracer hook injection failed: {exc}")
+
+        # ------------------------------------------------------------------
         # Stage 9: Host-to-Guest Port Forwarding
         # ------------------------------------------------------------------
         s9_start = time.perf_counter()
@@ -573,6 +616,9 @@ class MasterOrchestrator:
             service_launched=service_launched,
             forwarded_url=forward_url,
             pcap_file=pcap_file,
+            trace_file=trace_file,
+            gdb_connect=gdb_connect,
+            vulns_detected=vulns_detected,
             overall_status=overall,
             stages=stages,
             probe_result=probe_res,
@@ -596,6 +642,9 @@ class MasterOrchestrator:
         probe_result: Optional[HTTPProbeResult],
         curl_cmd: str,
         start_time: float,
+        trace_file: Optional[str] = None,
+        gdb_connect: Optional[str] = None,
+        vulns_detected: int = 0,
     ) -> OrchestrationResult:
         """Constructs and caches the final OrchestrationResult."""
         total_duration = round(time.perf_counter() - start_time, 2)
@@ -608,6 +657,9 @@ class MasterOrchestrator:
             service_launched=service_launched,
             forwarded_url=forwarded_url,
             pcap_capture_file=pcap_file,
+            trace_manifest_file=trace_file,
+            gdb_connect_command=gdb_connect,
+            vulnerabilities_found=vulns_detected,
             overall_status=overall_status,
             total_duration_seconds=total_duration,
             stages=stages,
@@ -640,6 +692,9 @@ class MasterOrchestrator:
                 service_launched=data.get("service_launched"),
                 forwarded_url=data.get("forwarded_url", ""),
                 pcap_capture_file=data.get("pcap_capture_file"),
+                trace_manifest_file=data.get("trace_manifest_file"),
+                gdb_connect_command=data.get("gdb_connect_command"),
+                vulnerabilities_found=data.get("vulnerabilities_found", 0),
                 overall_status=data.get("overall_status", "FAILED"),
                 total_duration_seconds=data.get("total_duration_seconds", 0.0),
                 stages=stages,

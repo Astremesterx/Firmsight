@@ -21,6 +21,7 @@ from firmsight.emulator.pcap_bridge import PCAPBridge
 from firmsight.emulator.port_forward import HTTPTriggerHarness, PortForwarder
 from firmsight.emulator.rootfs_prep import RootFSPreparer
 from firmsight.emulator.service_launcher import ServiceLauncher
+from firmsight.emulator.tracer_hook import DynamicHookInjector, Radare2Bridge, DANGEROUS_APIS
 from firmsight.extractor.extractor import FirmwareExtractor
 from firmsight.extractor.header_parser import HeaderParser
 from firmsight.extractor.mock_firmware import MockFirmwareBuilder
@@ -318,10 +319,39 @@ def main() -> None:
         "--force-shim", action="store_true", help="Force unprivileged simulation mode"
     )
     run_parser.add_argument(
+        "--enable-tracing", "-t", action="store_true", help="Arm Track 2 dynamic API hook injector & QEMU GDB stub"
+    )
+    run_parser.add_argument(
+        "--gdb-port", type=int, default=None, help="Explicit QEMU GDB stub port for Radare2 attachment"
+    )
+    run_parser.add_argument(
         "--markdown-out", "-m", type=str, default=None, help="Path to export Markdown execution report"
     )
     run_parser.add_argument(
         "--json-out", "-j", type=str, default=None, help="Path to export JSON execution telemetry"
+    )
+
+    # Command: trace (Track 2 Radare2 & Dynamic API Tracer Bridge)
+    trace_parser = subparsers.add_parser(
+        "trace", help="Arm Track 2 dynamic API hook injector, GDB stub & Radare2 trace scripts"
+    )
+    trace_parser.add_argument(
+        "target", type=str, help="Foreign ELF binary or extracted firmware rootfs directory"
+    )
+    trace_parser.add_argument(
+        "--gdb-port", "-g", type=int, default=1234, help="QEMU GDB stub debugging port (default: 1234)"
+    )
+    trace_parser.add_argument(
+        "--r2-script", type=str, default=None, help="Path to export automated Radare2 (.r2) attach script"
+    )
+    trace_parser.add_argument(
+        "--r2pipe-script", type=str, default=None, help="Path to export automated r2pipe Python script"
+    )
+    trace_parser.add_argument(
+        "--preload-c", type=str, default=None, help="Path to export LD_PRELOAD C hook source"
+    )
+    trace_parser.add_argument(
+        "--json-out", "-j", type=str, default=None, help="Path to export Track 2 trace manifest JSON"
     )
 
     args = parser.parse_args()
@@ -930,6 +960,8 @@ def main() -> None:
             enable_firewall=not args.no_firewall,
             probe_after_launch=not args.no_probe,
             force_shim=args.force_shim,
+            enable_tracing=args.enable_tracing,
+            gdb_port=args.gdb_port,
             service_binary_override=args.binary,
         )
 
@@ -950,6 +982,12 @@ def main() -> None:
         print(f"Verification:  {result.curl_command}")
         if result.pcap_capture_file:
             print(f"PCAP Capture:  {result.pcap_capture_file}")
+        if result.trace_manifest_file:
+            print(f"Trace Manifest:{result.trace_manifest_file}")
+        if result.gdb_connect_command:
+            print(f"Radare2 Attach:{result.gdb_connect_command}")
+        if result.vulnerabilities_found > 0:
+            print(f"Vulnerabilities:{result.vulnerabilities_found} flagged")
         if result.probe_result:
             p_status = result.probe_result.status_code or "UNREACHABLE"
             print(f"Health Probe:  HTTP {p_status} (Latency: {result.probe_result.response_time_ms}ms | Server: {result.probe_result.server_banner or 'N/A'})")
@@ -969,6 +1007,56 @@ def main() -> None:
 
         if result.overall_status == "FAILED":
             sys.exit(1)
+
+    elif args.command == "trace":
+        target = Path(args.target)
+        if not target.exists():
+            print(f"[-] Error: Target path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: Track 2 Dynamic API Hook Injector & Radare2 Bridge       ]")
+        print("[======================================================================]")
+        print(f"[*] Target Binary: {target.name}")
+        print(f"[*] QEMU GDB Stub Port: {args.gdb_port}")
+
+        injector = DynamicHookInjector()
+        session = injector.prepare_gdb_stub(target.name, port=args.gdb_port)
+        events = injector.simulate_trace_for_binary(target)
+        manifest_path = injector.export_manifest(events, session=session, output_file=args.json_out)
+
+        print(f"\n[+] QEMU GDB Stub armed: localhost:{session.gdb_port}")
+        print(f"[+] Radare2 Connect: {session.r2_connect_command}")
+        print(f"[+] GDB Multiarch:   {session.gdb_attach_command}")
+        print(f"[+] r2pipe Binding:  {session.r2pipe_init_code}")
+
+        if args.r2_script:
+            r2_path = Path(args.r2_script)
+            r2_path.parent.mkdir(parents=True, exist_ok=True)
+            r2_path.write_text(Radare2Bridge.generate_r2_script(session.gdb_port), encoding="utf-8")
+            print(f"[+] Exported Radare2 (.r2) attach script to: {r2_path}")
+
+        if args.r2pipe_script:
+            p_path = Path(args.r2pipe_script)
+            p_path.parent.mkdir(parents=True, exist_ok=True)
+            p_path.write_text(Radare2Bridge.generate_r2pipe_script(session.gdb_port, target.name), encoding="utf-8")
+            print(f"[+] Exported automated r2pipe script to: {p_path}")
+
+        if args.preload_c:
+            c_path = Path(args.preload_c)
+            c_path.parent.mkdir(parents=True, exist_ok=True)
+            c_path.write_text(injector.generate_preload_hook_source(), encoding="utf-8")
+            print(f"[+] Exported LD_PRELOAD C hook source to: {c_path}")
+
+        print(f"\n[+] Dynamic API Invocations Intercepted: {len(events)}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"{'TIMESTAMP':<24} {'FUNCTION':<10} {'RISK':<10} {'DETAILS / VULNERABILITY HEURISTIC'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for e in events:
+            vuln_str = e.vulnerability_indicator or f"Args: {', '.join(e.arguments)[:50]}"
+            print(f"{e.timestamp[:19]:<24} {e.function:<10} {e.risk_level:<10} {vuln_str}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"[+] Trace Manifest: {manifest_path}")
 
     else:
         parser.print_help()

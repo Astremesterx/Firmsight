@@ -25,11 +25,11 @@
 - [x] **Day 12:** Subnet & Virtual IP Routing Engine (`firmsight/emulator/network_router.py`): guest-to-host virtual routing, NVRAM subnet alignment (`lan_ipaddr`), host bridge IP binding, and route table emulation.
 - [x] **Day 13:** IPTables Sandbox Rules & Sniffer Forwarding (`firmsight/emulator/firewall.py`): isolation policies (WAN egress block), Track 3 sniffer packet cloning (TEE mangle rules), host-to-guest control channel, software packet policy evaluator, and shell script export.
 - [x] **Day 14:** Integration Bridge with Track 3 PCAP Engine (`firmsight/emulator/pcap_bridge.py`): binary PCAP v2.4 synthesizer, sniffer tap (fs-sniff0) controller, live flow generation (DNS/HTTP/ICMP/C2), and session manifest contract.
-- [x] **Day 15 (Today):** Port Forwarding & External HTTP Trigger Harness (`firmsight/emulator/port_forward.py`): bidirectional host-to-guest socket proxy & iptables NAT forwarder, dynamic HTTP/curl probe tester, automated IoT endpoint diagnostics, and curl script generator. Completed Phase 3.
+- [x] **Day 15:** Port Forwarding & External HTTP Trigger Harness (`firmsight/emulator/port_forward.py`): bidirectional host-to-guest socket proxy & iptables NAT forwarder, dynamic HTTP/curl probe tester, automated IoT endpoint diagnostics, and curl script generator. Completed Phase 3.
 
 ### Phase 4: Master Orchestrator, Integration & Polish (Days 16–20) — *Final Review Milestone*
-- [x] **Day 16 (Today):** FirmSight Master CLI Runner (`firmsight run <firmware.bin>`): one-command end-to-end 10-stage execution pipeline linking Phase 1, Phase 2, and Phase 3 subsystems with automated verification.
-- [ ] **Day 17:** Dynamic API hook injector for Track 2's Radare2 memory tracer (`r2pipe` hook port exposure).
+- [x] **Day 16:** FirmSight Master CLI Runner (`firmsight run <firmware.bin>`): one-command end-to-end 10-stage execution pipeline linking Phase 1, Phase 2, and Phase 3 subsystems with automated verification.
+- [x] **Day 17 (Today):** Dynamic API hook injector for Track 2's Radare2 memory tracer (`firmsight/emulator/tracer_hook.py`): QEMU GDB stub debugging exposure, libc API call interception, automated Radare2/r2pipe trace scripts, and Track 2 JSON manifest contract.
 - [ ] **Day 18:** Sandbox Teardown & Resource Cleanup (`firmsight/emulator/cleanup.py`): unmount filesystems, kill child QEMU processes, release virtual interfaces.
 - [ ] **Day 19:** Comprehensive End-to-End Stress & Regression Testing with multiple firmware samples (ARM & MIPS).
 - [ ] **Day 20 (Final Review Milestone):** Production Documentation, Architecture diagrams, and demonstration runbook.
