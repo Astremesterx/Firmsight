@@ -29,7 +29,7 @@
 
 ### Phase 4: Master Orchestrator, Integration & Polish (Days 16–20) — *Final Review Milestone*
 - [x] **Day 16:** FirmSight Master CLI Runner (`firmsight run <firmware.bin>`): one-command end-to-end 10-stage execution pipeline linking Phase 1, Phase 2, and Phase 3 subsystems with automated verification.
-- [x] **Day 17 (Today):** Dynamic API hook injector for Track 2's Radare2 memory tracer (`firmsight/emulator/tracer_hook.py`): QEMU GDB stub debugging exposure, libc API call interception, automated Radare2/r2pipe trace scripts, and Track 2 JSON manifest contract.
-- [ ] **Day 18:** Sandbox Teardown & Resource Cleanup (`firmsight/emulator/cleanup.py`): unmount filesystems, kill child QEMU processes, release virtual interfaces.
+- [x] **Day 17:** Dynamic API hook injector for Track 2's Radare2 memory tracer (`firmsight/emulator/tracer_hook.py`): QEMU GDB stub debugging exposure, libc API call interception, automated Radare2/r2pipe trace scripts, and Track 2 JSON manifest contract.
+- [x] **Day 18 (Today):** Sandbox Teardown & Resource Cleanup (`firmsight/emulator/cleanup.py`): unmount filesystems, kill child QEMU processes, release virtual interfaces (`fs-br0`, `fs-tap0`, `fs-sniff0`), terminate socket proxies, flush firewall rules, clean workspace artifacts, and CLI `firmsight teardown`.
 - [ ] **Day 19:** Comprehensive End-to-End Stress & Regression Testing with multiple firmware samples (ARM & MIPS).
 - [ ] **Day 20 (Final Review Milestone):** Production Documentation, Architecture diagrams, and demonstration runbook.

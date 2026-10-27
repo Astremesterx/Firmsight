@@ -199,8 +199,8 @@ class MasterOrchestrator:
         self.active_port_forwarder: Optional[PortForwarder] = None
         self.active_service_launcher: Optional[ServiceLauncher] = None
 
-    def cleanup(self) -> None:
-        """Gracefully terminates active port forwarders and emulated services."""
+    def cleanup(self, purge_all: bool = False) -> None:
+        """Gracefully terminates active port forwarders, emulated services, and sandbox artifacts."""
         if self.active_port_forwarder is not None:
             try:
                 self.active_port_forwarder.stop_all()
@@ -211,6 +211,12 @@ class MasterOrchestrator:
                 self.active_service_launcher.stop_all()
             except Exception as exc:
                 logger.debug(f"Error terminating service daemons: {exc}")
+        try:
+            from firmsight.emulator.cleanup import SandboxCleanupManager
+            cleaner = SandboxCleanupManager(self.workspace_dir)
+            cleaner.teardown_all(purge_all=purge_all)
+        except Exception as exc:
+            logger.debug(f"Error executing master sandbox cleanup: {exc}")
 
     def run(self, config: OrchestrationConfig) -> OrchestrationResult:
         """Executes the complete 10-stage end-to-end FirmSight emulation pipeline."""

@@ -222,6 +222,8 @@ class _SocketProxyWorker:
 class PortForwarder:
     """Manages host-to-guest port forwarders and state tracking."""
 
+    _global_workers: Dict[str, _SocketProxyWorker] = {}
+
     def __init__(self, workspace_dir: Optional[Union[str, Path]] = None) -> None:
         if workspace_dir:
             self.workspace_dir = Path(workspace_dir)
@@ -230,7 +232,7 @@ class PortForwarder:
 
         self.state_file = self.workspace_dir / "sandbox_workspace" / "network" / "port_forward_state.json"
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        self._active_workers: Dict[str, _SocketProxyWorker] = {}
+        self._active_workers: Dict[str, _SocketProxyWorker] = PortForwarder._global_workers
 
     def is_privileged_linux(self) -> bool:
         """Determines if host possesses root capabilities with iptables on Linux."""
@@ -352,6 +354,10 @@ class PortForwarder:
                 self.state_file.unlink()
             except OSError:
                 pass
+
+    def stop_all(self) -> None:
+        """Alias for teardown_all()."""
+        self.teardown_all()
 
     def _save_state(self) -> None:
         """Persists active rules state to disk."""

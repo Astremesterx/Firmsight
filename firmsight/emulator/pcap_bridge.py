@@ -81,6 +81,8 @@ class CaptureSessionInfo:
 class PCAPBridge:
     """Orchestrates network packet capture on virtual interfaces and bridges with Track 3."""
 
+    _global_session: Optional[CaptureSessionInfo] = None
+
     def __init__(self, workspace_dir: Optional[Union[str, Path]] = None) -> None:
         if workspace_dir:
             self.workspace_dir = Path(workspace_dir)
@@ -90,7 +92,7 @@ class PCAPBridge:
         self.captures_dir = self.workspace_dir / "sandbox_workspace" / "captures"
         self.captures_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_file = self.captures_dir / "capture_manifest.json"
-        self._current_session: Optional[CaptureSessionInfo] = None
+        self._current_session: Optional[CaptureSessionInfo] = PCAPBridge._global_session
         self._tcpdump_proc: Optional[subprocess.Popen] = None
 
     def is_privileged_linux(self) -> bool:
@@ -298,6 +300,7 @@ class PCAPBridge:
         )
 
         self._current_session = session
+        PCAPBridge._global_session = session
         self._save_manifest(session)
         return session
 
@@ -441,6 +444,8 @@ class PCAPBridge:
 
         session.is_active = False
         session.end_time = datetime.now(timezone.utc).isoformat()
+        if PCAPBridge._global_session:
+            PCAPBridge._global_session.is_active = False
 
         # Update stats from disk if pcap file exists
         pcap_path = Path(session.pcap_file)
@@ -452,7 +457,12 @@ class PCAPBridge:
 
         self._save_manifest(session)
         self._current_session = None
+        PCAPBridge._global_session = None
         return session
+
+    def stop_capture_session(self, session_id: Optional[str] = None) -> Optional[CaptureSessionInfo]:
+        """Alias for stop_capture()."""
+        return self.stop_capture(session_id=session_id)
 
     def parse_pcap_headers(self, pcap_path: Union[str, Path]) -> Dict:
         """Parses and validates standard binary PCAP headers and counts packet records."""
@@ -492,18 +502,38 @@ class PCAPBridge:
 
     def get_active_session(self) -> Optional[CaptureSessionInfo]:
         """Retrieves active capture session from memory or manifest cache."""
+        if self.manifest_file.exists():
+            try:
+                data = json.loads(self.manifest_file.read_text(encoding="utf-8"))
+                if not data.get("is_active", False):
+                    if self._current_session:
+                        self._current_session.is_active = False
+                        self._current_session = None
+                    if PCAPBridge._global_session:
+                        PCAPBridge._global_session.is_active = False
+                        PCAPBridge._global_session = None
+                    return None
+            except (json.JSONDecodeError, KeyError, OSError):
+                pass
+
         if self._current_session and self._current_session.is_active:
+            return self._current_session
+
+        if PCAPBridge._global_session and PCAPBridge._global_session.is_active:
+            self._current_session = PCAPBridge._global_session
             return self._current_session
 
         if self.manifest_file.exists():
             try:
                 data = json.loads(self.manifest_file.read_text(encoding="utf-8"))
-                session = CaptureSessionInfo.from_dict(data)
-                if session.is_active:
+                if data.get("is_active", False):
+                    session = CaptureSessionInfo.from_dict(data)
                     self._current_session = session
+                    PCAPBridge._global_session = session
                     return session
             except (json.JSONDecodeError, KeyError, OSError):
                 pass
+
         return None
 
     def export_track3_manifest(self) -> Dict:

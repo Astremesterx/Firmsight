@@ -12,6 +12,7 @@ from firmsight.emulator.daemon import DaemonManager
 from firmsight.emulator.device_nodes import DeviceNodeManager
 from firmsight.emulator.firewall import FirewallManager
 from firmsight.emulator.health_monitor import HealthMonitor
+from firmsight.emulator.cleanup import SandboxCleanupManager, CleanupReport
 from firmsight.emulator.integration_proof import EmulationProofEngine
 from firmsight.emulator.network_bridge import NetworkBridgeManager
 from firmsight.emulator.network_router import NetworkRouter
@@ -352,6 +353,26 @@ def main() -> None:
     )
     trace_parser.add_argument(
         "--json-out", "-j", type=str, default=None, help="Path to export Track 2 trace manifest JSON"
+    )
+
+    # Command: teardown (Sandbox Teardown & Resource Cleanup)
+    teardown_parser = subparsers.add_parser(
+        "teardown", help="Tear down emulation resources, release bridges/taps, kill QEMU, flush firewall"
+    )
+    teardown_parser.add_argument(
+        "--rootfs", type=str, default=None, help="RootFS directory to check for active chroot mounts"
+    )
+    teardown_parser.add_argument(
+        "--all", action="store_true", help="Purge all temporary artifacts, captures, and state files"
+    )
+    teardown_parser.add_argument(
+        "--force-shim", action="store_true", help="Force unprivileged simulation mode during flush"
+    )
+    teardown_parser.add_argument(
+        "--markdown-out", "-m", type=str, default=None, help="Path to export Markdown teardown report"
+    )
+    teardown_parser.add_argument(
+        "--json-out", "-j", type=str, default=None, help="Path to export JSON teardown report"
     )
 
     args = parser.parse_args()
@@ -1057,6 +1078,40 @@ def main() -> None:
             print(f"{e.timestamp[:19]:<24} {e.function:<10} {e.risk_level:<10} {vuln_str}")
         print("--------------------------------------------------------------------------------------------------------")
         print(f"[+] Trace Manifest: {manifest_path}")
+
+    elif args.command == "teardown":
+        print("[======================================================================]")
+        print("[  FirmSight: Sandbox Teardown & Resource Cleanup                      ]")
+        print("[======================================================================]")
+        cleaner = SandboxCleanupManager()
+        report = cleaner.teardown_all(
+            rootfs_dir=args.rootfs,
+            purge_all=args.all,
+            force_shim=args.force_shim,
+        )
+        print(f"\n[*] Execution Duration: {report.duration_seconds:.2f}s")
+        print(f"[*] Total Released:     {report.total_cleaned}")
+        print(f"[*] Total Failed:       {report.total_failed}")
+        print(f"[*] Total Skipped:      {report.total_skipped}")
+        print("\n--------------------------------------------------------------------------------------------------------")
+        print(f"{'CATEGORY':<12} {'TARGET RESOURCE':<35} {'STATUS':<10} {'DETAILS'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for item in report.items:
+            badge = "[OK]" if item.status == "SUCCESS" else ("[SKIP]" if item.status == "SKIPPED" else "[FAIL]")
+            print(f"{item.category:<12} {item.resource_id:<35} {badge:<10} {item.details}")
+        print("--------------------------------------------------------------------------------------------------------")
+
+        if args.markdown_out:
+            m_path = Path(args.markdown_out)
+            m_path.parent.mkdir(parents=True, exist_ok=True)
+            m_path.write_text(report.export_markdown(), encoding="utf-8")
+            print(f"[+] Exported Markdown teardown report to: {m_path}")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+            print(f"[+] Exported JSON teardown report to: {j_path}")
 
     else:
         parser.print_help()
