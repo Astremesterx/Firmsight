@@ -27,6 +27,13 @@ from firmsight.extractor.extractor import FirmwareExtractor
 from firmsight.extractor.header_parser import HeaderParser
 from firmsight.extractor.mock_firmware import MockFirmwareBuilder
 from firmsight.extractor.squashfs_handler import SquashFSHandler
+from firmsight.analyzer.elf_parser import ELFParser
+from firmsight.analyzer.credential_scanner import CredentialScanner
+from firmsight.analyzer.vulnerability_scanner import VulnerabilityScanner
+from firmsight.analyzer.exploit_poc import ExploitHarness
+from firmsight.network.pcap_analyzer import PCAPAnalyzer
+from firmsight.tui.app import FirmSightTUI
+from firmsight.reports.generator import ReportGenerator
 
 
 def main() -> None:
@@ -374,6 +381,49 @@ def main() -> None:
     teardown_parser.add_argument(
         "--json-out", "-j", type=str, default=None, help="Path to export JSON teardown report"
     )
+
+    # Command: analyze (Track 2 Static Binary & Vulnerability Audit)
+    analyze_parser = subparsers.add_parser(
+        "analyze", help="Perform static ELF parsing, memory layout audit, and banned API scan"
+    )
+    analyze_parser.add_argument("binary", type=str, help="Path to ELF binary to analyze")
+    analyze_parser.add_argument("--json-out", "-j", type=str, default=None, help="Path to export JSON report")
+
+    # Command: scan-creds (Track 2 Hardcoded Credential & Secret Scanner)
+    creds_parser = subparsers.add_parser(
+        "scan-creds", help="Scan firmware or rootfs for hardcoded credentials, private keys, and default logins"
+    )
+    creds_parser.add_argument("target", type=str, help="Firmware file or extracted rootfs directory")
+    creds_parser.add_argument("--json-out", "-j", type=str, default=None, help="Path to export JSON findings")
+
+    # Command: exploit (Track 2 Buffer Overflow PoC Verification)
+    exploit_parser = subparsers.add_parser(
+        "exploit", help="Execute proof-of-concept buffer overflow test against target service"
+    )
+    exploit_parser.add_argument("--host", type=str, default="127.0.0.1", help="Target host (default: 127.0.0.1)")
+    exploit_parser.add_argument("--port", "-p", type=int, default=8080, help="Target port (default: 8080)")
+    exploit_parser.add_argument("--size", "-s", type=int, default=512, help="Payload buffer size (default: 512)")
+    exploit_parser.add_argument("--force-shim", action="store_true", help="Run in simulation mode")
+    exploit_parser.add_argument("--json-out", "-j", type=str, default=None, help="Path to export exploit report")
+
+    # Command: pcap-analyze (Track 3 Deep Packet Inspection & C2 Heuristics)
+    pcap_parser = subparsers.add_parser(
+        "pcap-analyze", help="Analyze PCAP capture file for protocols, anomalies, and C2 botnet beacons"
+    )
+    pcap_parser.add_argument("pcap_file", type=str, help="Path to .pcap capture file")
+    pcap_parser.add_argument("--json-out", "-j", type=str, default=None, help="Path to export PCAP report")
+
+    # Command: tui (Track 3 Interactive Terminal UI Dashboard)
+    tui_parser = subparsers.add_parser(
+        "tui", help="Launch interactive FirmSight terminal dashboard"
+    )
+    tui_parser.add_argument("--interactive", "-i", action="store_true", help="Run continuous live refresh loop")
+
+    # Command: report (Executive HTML Security Audit Generator)
+    report_parser = subparsers.add_parser(
+        "report", help="Generate self-contained executive HTML security audit report"
+    )
+    report_parser.add_argument("--out", "-o", type=str, default=None, help="Output HTML report path")
 
     args = parser.parse_args()
 
@@ -1012,6 +1062,9 @@ def main() -> None:
         if result.probe_result:
             p_status = result.probe_result.status_code or "UNREACHABLE"
             print(f"Health Probe:  HTTP {p_status} (Latency: {result.probe_result.response_time_ms}ms | Server: {result.probe_result.server_banner or 'N/A'})")
+        report_html = Path("sandbox_workspace/reports/firmware_audit_report.html")
+        if report_html.exists():
+            print(f"HTML Report:   {report_html}")
         print("[==================================================================]")
 
         if args.markdown_out:
@@ -1112,6 +1165,150 @@ def main() -> None:
             j_path.parent.mkdir(parents=True, exist_ok=True)
             j_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
             print(f"[+] Exported JSON teardown report to: {j_path}")
+
+    elif args.command == "analyze":
+        target = Path(args.binary)
+        if not target.exists():
+            print(f"[-] Error: Target binary not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: Track 2 Static ELF, Memory Layout & Vulnerability Audit  ]")
+        print("[======================================================================]")
+        scanner = VulnerabilityScanner(target)
+        audit_rep = scanner.audit()
+
+        print(f"[*] Target:       {target.name}")
+        print(f"[*] Architecture: {audit_rep.architecture}")
+        print(f"[*] Risk Score:   {audit_rep.risk_score} / 100 ({audit_rep.overall_verdict})")
+
+        print("\n[+] Binary Hardening Mitigations:")
+        for flag, val in audit_rep.hardening_flags.items():
+            badge = "[ENABLED]" if val else "[DISABLED]"
+            print(f"    - {flag:<16}: {badge}")
+
+        print(f"\n[+] Dangerous Banned C Library Calls: {len(audit_rep.banned_functions)}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"{'FUNCTION':<12} {'SEVERITY':<10} {'CWE ID':<10} {'VULNERABILITY TYPE':<22} {'DESCRIPTION'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for f in audit_rep.banned_functions:
+            print(f"{f.function_name:<12} {f.severity:<10} {f.cwe_id:<10} {f.vulnerability_type:<22} {f.description[:42]}...")
+        print("--------------------------------------------------------------------------------------------------------")
+
+        print(f"\n[+] Virtual Memory Layout ({len(audit_rep.memory_segments)} segments):")
+        for s in audit_rep.memory_segments:
+            rwx_tag = " [RWX - VULNERABLE]" if s.is_rwx else ""
+            print(f"    - {s.vaddr_start} - {s.vaddr_end} ({s.size_bytes:>8} bytes) Perms: {s.permissions}{rwx_tag}")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps(audit_rep.to_dict(), indent=2), encoding="utf-8")
+            print(f"\n[+] Exported JSON audit report to: {j_path}")
+
+    elif args.command == "scan-creds":
+        target = Path(args.target)
+        if not target.exists():
+            print(f"[-] Error: Target path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: Track 2 Hardcoded Credential & Secret Scanner           ]")
+        print("[======================================================================]")
+        scanner = CredentialScanner(target)
+        findings = scanner.scan()
+
+        print(f"[*] Scanned Target: {target}")
+        print(f"[*] Total Secrets Identified: {len(findings)}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"{'SEVERITY':<10} {'RULE TYPE':<24} {'OFFSET':<12} {'SNIPPET':<20} {'DESCRIPTION'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for c in findings:
+            print(f"{c.severity:<10} {c.rule_name:<24} 0x{c.offset:<10x} {c.snippet:<20} {c.description[:35]}")
+        print("--------------------------------------------------------------------------------------------------------")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps([f.to_dict() for f in findings], indent=2), encoding="utf-8")
+            print(f"\n[+] Exported JSON findings to: {j_path}")
+
+    elif args.command == "exploit":
+        print("[======================================================================]")
+        print("[  FirmSight: Track 2 Proof-of-Concept Buffer Overflow Exploit Tester  ]")
+        print("[======================================================================]")
+        print(f"[*] Target Endpoint: {args.host}:{args.port}")
+        print(f"[*] Malicious Payload Length: {args.size} bytes (Cyclic pattern)")
+
+        harness = ExploitHarness(host=args.host, port=args.port)
+        res = harness.trigger_exploit(payload_size=args.size, force_shim=args.force_shim)
+
+        print(f"\n[+] Exploit Execution Status: {res.status}")
+        print(f"[+] Vulnerability Target:     {res.vulnerability}")
+        print(f"[+] Outcome Details:          {res.details}")
+
+        if res.crashed_registers:
+            regs = res.crashed_registers
+            print("\n[+] Captured CPU Register State at Fault:")
+            print(f"    - PC (Instruction Pointer): {regs.pc}  [HIJACKED]")
+            print(f"    - LR (Return Address):      {regs.lr}")
+            print(f"    - SP (Stack Pointer):       {regs.sp}")
+            print(f"    - R0: {regs.r0}  R1: {regs.r1}  R2: {regs.r2}  R3: {regs.r3}")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps(res.to_dict(), indent=2), encoding="utf-8")
+            print(f"\n[+] Exported JSON exploit telemetry to: {j_path}")
+
+    elif args.command == "pcap-analyze":
+        pcap_file = Path(args.pcap_file)
+        if not pcap_file.exists():
+            print(f"[-] Error: PCAP file not found: {pcap_file}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: Track 3 PCAP Deep Packet Inspection & C2 Threat Monitor  ]")
+        print("[======================================================================]")
+        analyzer = PCAPAnalyzer(pcap_file)
+        report = analyzer.analyze()
+
+        print(f"[*] Capture File:   {pcap_file.name}")
+        print(f"[*] Total Packets:  {report.total_packets}")
+        print(f"[*] Total Volume:   {report.total_bytes} bytes")
+        print(f"[*] Threat Level:   {report.threat_level} (Score: {report.threat_score}/100)")
+
+        print("\n[+] Protocol Breakdown:")
+        for proto, count in report.protocols_breakdown.items():
+            print(f"    - {proto:<14}: {count} packet(s)")
+
+        print(f"\n[+] Behavioral Threat Alerts Flagged: {len(report.threat_alerts)}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"{'ALERT ID':<14} {'SEVERITY':<10} {'THREAT NAME':<34} {'DESCRIPTION'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for a in report.threat_alerts:
+            print(f"{a.alert_id:<14} {a.severity:<10} {a.threat_name:<34} {a.description}")
+        print("--------------------------------------------------------------------------------------------------------")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+            print(f"\n[+] Exported JSON forensic report to: {j_path}")
+
+    elif args.command == "tui":
+        tui = FirmSightTUI()
+        tui.run(interactive=args.interactive)
+
+    elif args.command == "report":
+        print("[======================================================================]")
+        print("[  FirmSight: Executive HTML Security Audit Report Generator           ]")
+        print("[======================================================================]")
+        rep_gen = ReportGenerator()
+        out_file = rep_gen.generate(output_file=args.out)
+        print(f"[+] Successfully generated Executive HTML Audit Report!")
+        print(f"[+] File: {out_file.resolve()}")
+        print(f"[+] Open this file in your browser to view interactive visual dashboards.")
 
     else:
         parser.print_help()

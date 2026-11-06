@@ -432,7 +432,12 @@ class HTTPTriggerHarness:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             resp_headers = dict(exc.headers.items()) if exc.headers else {}
             server_banner = resp_headers.get("Server") or resp_headers.get("server")
-            body = exc.read() if hasattr(exc, "read") else b""
+            body = b""
+            try:
+                if hasattr(exc, "read"):
+                    body = exc.read()
+            except Exception:
+                body = b""
 
             return HTTPProbeResult(
                 url=url,

@@ -679,6 +679,19 @@ class MasterOrchestrator:
         except OSError as exc:
             logger.warning(f"Could not write last run state: {exc}")
 
+        # Automatically synthesize Executive HTML Audit Report
+        try:
+            from firmsight.reports.generator import ReportGenerator
+            rep_gen = ReportGenerator(self.workspace_dir)
+            rep_gen.generate(
+                target_name=target_name,
+                architecture=f"{architecture} ({endianness}-endian)",
+                emulation_verdict=overall_status,
+                duration=total_duration,
+            )
+        except Exception as exc:
+            logger.debug(f"HTML report generation skipped: {exc}")
+
         return res
 
     def get_last_run(self) -> Optional[OrchestrationResult]:
