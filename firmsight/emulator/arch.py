@@ -95,6 +95,18 @@ class ArchitectureResolver:
         )
 
     @classmethod
+    def is_foreign(cls, arch: str) -> bool:
+        """Determines if the target architecture requires QEMU foreign CPU emulation on host."""
+        import platform
+
+        host_machine = platform.machine().lower()
+        if host_machine in ["x86_64", "amd64"]:
+            return arch.lower() not in ["x86", "x86_64"]
+        elif host_machine in ["aarch64", "arm64"]:
+            return arch.lower() not in ["arm", "aarch64"]
+        return arch.lower() != host_machine
+
+    @classmethod
     def resolve_rootfs(cls, rootfs_dir: Union[str, Path]) -> Optional[ArchitectureInfo]:
         """Scans well-known binary locations in an extracted rootfs to infer overall system architecture."""
         rootfs = Path(rootfs_dir)

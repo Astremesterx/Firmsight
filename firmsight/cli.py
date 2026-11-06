@@ -1,19 +1,48 @@
 """Command-line interface for FirmSight."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from firmsight.core.config import SAMPLES_DIR, ensure_directories
 from firmsight.emulator.arch import ArchitectureResolver
+from firmsight.emulator.chroot_runner import ChrootRunner
+from firmsight.emulator.daemon import DaemonManager
+from firmsight.emulator.device_nodes import DeviceNodeManager
+from firmsight.emulator.firewall import FirewallManager
+from firmsight.emulator.health_monitor import HealthMonitor
+from firmsight.emulator.cleanup import SandboxCleanupManager, CleanupReport
+from firmsight.emulator.integration_proof import EmulationProofEngine
+from firmsight.emulator.network_bridge import NetworkBridgeManager
+from firmsight.emulator.network_router import NetworkRouter
 from firmsight.emulator.nvram import MockNVRAM
+from firmsight.emulator.orchestrator import MasterOrchestrator, OrchestrationConfig
+from firmsight.emulator.pcap_bridge import PCAPBridge
+from firmsight.emulator.port_forward import HTTPTriggerHarness, PortForwarder
+from firmsight.emulator.rootfs_prep import RootFSPreparer
+from firmsight.emulator.service_launcher import ServiceLauncher
+from firmsight.emulator.tracer_hook import DynamicHookInjector, Radare2Bridge, DANGEROUS_APIS
 from firmsight.extractor.extractor import FirmwareExtractor
 from firmsight.extractor.header_parser import HeaderParser
 from firmsight.extractor.mock_firmware import MockFirmwareBuilder
+from firmsight.extractor.squashfs_handler import SquashFSHandler
+from firmsight.analyzer.elf_parser import ELFParser
+from firmsight.analyzer.credential_scanner import CredentialScanner
+from firmsight.analyzer.vulnerability_scanner import VulnerabilityScanner
+from firmsight.analyzer.exploit_poc import ExploitHarness
+from firmsight.network.pcap_analyzer import PCAPAnalyzer
+from firmsight.tui.app import FirmSightTUI
+from firmsight.reports.generator import ReportGenerator
 
 
 def main() -> None:
     """FirmSight main CLI router."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     ensure_directories()
     parser = argparse.ArgumentParser(
         prog="firmsight",
@@ -65,6 +94,336 @@ def main() -> None:
     nvram_parser.add_argument(
         "rootfs", type=str, help="Path to extracted rootfs directory"
     )
+
+    # Command: prep-rootfs
+    prep_parser = subparsers.add_parser(
+        "prep-rootfs", help="Sanitize rootfs and bridge QEMU static binaries for chroot execution"
+    )
+    prep_parser.add_argument(
+        "rootfs", type=str, help="Path to extracted rootfs directory"
+    )
+
+    # Command: execute
+    exec_parser = subparsers.add_parser(
+        "execute", help="Execute a foreign architecture binary inside the rootfs sandbox"
+    )
+    exec_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    exec_parser.add_argument("binary", type=str, help="Relative path to binary inside rootfs (e.g. usr/sbin/httpd)")
+    exec_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
+    exec_parser.add_argument("--args", nargs="*", default=[], help="Arguments to pass to target binary")
+
+    # Command: diagnose
+    diag_parser = subparsers.add_parser(
+        "diagnose", help="Execute binary and run automated emulation health diagnostics"
+    )
+    diag_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    diag_parser.add_argument("binary", type=str, help="Relative path to binary inside rootfs (e.g. usr/sbin/httpd)")
+    diag_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
+
+    # Command: launch-web
+    web_parser = subparsers.add_parser(
+        "launch-web", help="Auto-discover and launch embedded router web server inside QEMU"
+    )
+    web_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    web_parser.add_argument("--port", "-p", type=int, default=80, help="Web server port (default: 80)")
+    web_parser.add_argument("--timeout", "-t", type=int, default=5, help="Execution timeout in seconds")
+
+    # Command: init-dev
+    dev_parser = subparsers.add_parser(
+        "init-dev", help="Provision simulated Linux character devices and MTD flash blocks"
+    )
+    dev_parser.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    dev_parser.add_argument("--no-mtd", action="store_true", help="Skip creating MTD flash partition blocks")
+
+    # Command: daemon
+    daemon_parser = subparsers.add_parser(
+        "daemon", help="Manage asynchronous background emulator processes"
+    )
+    daemon_sub = daemon_parser.add_subparsers(dest="daemon_action", help="Daemon action")
+
+    d_start = daemon_sub.add_parser("start", help="Spawn a background daemon")
+    d_start.add_argument("rootfs", type=str, help="Path to extracted rootfs directory")
+    d_start.add_argument("binary", type=str, help="Relative path to binary inside rootfs")
+    d_start.add_argument("--name", "-n", type=str, default=None, help="Custom daemon identifier")
+
+    daemon_sub.add_parser("list", help="List all background daemons")
+
+    d_status = daemon_sub.add_parser("status", help="Get daemon status and recent logs")
+    d_status.add_argument("name", type=str, help="Daemon name")
+
+    d_stop = daemon_sub.add_parser("stop", help="Stop a background daemon")
+    d_stop.add_argument("name", type=str, help="Daemon name")
+
+    # Command: inspect-squashfs
+    squash_parser = subparsers.add_parser(
+        "inspect-squashfs", help="Deep inspection and multi-partition carving of SquashFS superblocks"
+    )
+    squash_parser.add_argument("file", type=str, help="Firmware binary path")
+    squash_parser.add_argument("--carve", action="store_true", help="Carve identified partitions to disk")
+    squash_parser.add_argument("--output-dir", "-o", type=str, default=None, help="Output directory for carved partitions")
+
+    # Command: emulate-proof (Mid-Review Milestone)
+    proof_parser = subparsers.add_parser(
+        "emulate-proof",
+        help="End-to-End emulation integration verification proof (Mid Review Milestone)",
+    )
+    proof_parser.add_argument(
+        "target",
+        type=str,
+        help="Path to firmware image (.bin) or extracted rootfs directory",
+    )
+    proof_parser.add_argument(
+        "--port", "-p", type=int, default=8080, help="Port to bind web service (default: 8080)"
+    )
+    proof_parser.add_argument(
+        "--binary", "-b", type=str, default=None, help="Explicit service binary override relative to rootfs"
+    )
+    proof_parser.add_argument(
+        "--markdown-out", "-m", type=str, default=None, help="Output path to export Markdown proof report"
+    )
+    proof_parser.add_argument(
+        "--json-out", "-j", type=str, default=None, help="Output path to export JSON proof telemetry"
+    )
+
+    # Command: network (Virtual Network Bridge & TAP Interface Manager)
+    net_parser = subparsers.add_parser("network", help="Virtual Network Bridge & TAP Interface Manager")
+    net_sub = net_parser.add_subparsers(dest="net_action", required=True)
+
+    # network setup
+    n_setup = net_sub.add_parser("setup", help="Provision virtual TAP device and network bridge")
+    n_setup.add_argument("--tap", type=str, default="fs-tap0", help="TAP interface name (default: fs-tap0)")
+    n_setup.add_argument("--bridge", type=str, default="fs-br0", help="Bridge interface name (default: fs-br0)")
+    n_setup.add_argument("--force-shim", action="store_true", help="Force unprivileged shim mode")
+
+    # network status
+    net_sub.add_parser("status", help="Query virtual bridge network status")
+
+    # network teardown
+    n_tear = net_sub.add_parser("teardown", help="Tear down virtual network bridge and TAP devices")
+    n_tear.add_argument("--tap", type=str, default=None, help="TAP interface name")
+    n_tear.add_argument("--bridge", type=str, default=None, help="Bridge interface name")
+
+    # network route-setup
+    r_setup = net_sub.add_parser("route-setup", help="Configure subnet and guest-to-host virtual routing")
+    r_setup.add_argument("--bridge", type=str, default="fs-br0", help="Bridge interface name (default: fs-br0)")
+    r_setup.add_argument("--guest-ip", type=str, default="192.168.1.1", help="Emulated IoT router IP (default: 192.168.1.1)")
+    r_setup.add_argument("--netmask", type=str, default="255.255.255.0", help="Subnet mask (default: 255.255.255.0)")
+    r_setup.add_argument("--force-shim", action="store_true", help="Force unprivileged shim mode")
+
+    # network route-status
+    net_sub.add_parser("route-status", help="Query virtual routing and subnet configurations")
+
+    # network route-teardown
+    r_tear = net_sub.add_parser("route-teardown", help="Tear down virtual IP routing configurations")
+    r_tear.add_argument("--bridge", type=str, default=None, help="Bridge interface name")
+
+    # network firewall-apply
+    fw_apply = net_sub.add_parser("firewall-apply", help="Apply sandbox isolation and sniffer forwarding rules")
+    fw_apply.add_argument("--bridge", type=str, default="fs-br0", help="Bridge interface name (default: fs-br0)")
+    fw_apply.add_argument("--sniffer", type=str, default="fs-sniff0", help="Sniffer interface name (default: fs-sniff0)")
+    fw_apply.add_argument("--guest-ip", type=str, default="192.168.1.1", help="Guest IP (default: 192.168.1.1)")
+    fw_apply.add_argument("--host-ip", type=str, default="192.168.1.254", help="Host IP (default: 192.168.1.254)")
+    fw_apply.add_argument("--subnet", type=str, default="192.168.1.0/24", help="Subnet CIDR (default: 192.168.1.0/24)")
+    fw_apply.add_argument("--no-wan-block", action="store_true", help="Disable outbound WAN egress blocking")
+    fw_apply.add_argument("--no-sniffer-mirror", action="store_true", help="Disable Track 3 sniffer packet mirroring")
+    fw_apply.add_argument("--force-shim", action="store_true", help="Force unprivileged shim mode")
+
+    # network firewall-status
+    net_sub.add_parser("firewall-status", help="Query sandbox firewall rules and isolation status")
+
+    # network firewall-flush
+    fw_flush = net_sub.add_parser("firewall-flush", help="Flush sandbox firewall rules and purge state")
+    fw_flush.add_argument("--force-shim", action="store_true", help="Force unprivileged shim mode")
+
+    # network firewall-test
+    fw_test = net_sub.add_parser("firewall-test", help="Simulate packet evaluation against active sandbox rules")
+    fw_test.add_argument("--src", type=str, default="192.168.1.1", help="Source IP (default: 192.168.1.1)")
+    fw_test.add_argument("--dst", type=str, default="8.8.8.8", help="Destination IP (default: 8.8.8.8)")
+    fw_test.add_argument("--port", type=int, default=80, help="Destination port (default: 80)")
+    fw_test.add_argument("--proto", type=str, default="tcp", help="Protocol (default: tcp)")
+    fw_test.add_argument("--in-iface", type=str, default="fs-br0", help="Ingress interface (default: fs-br0)")
+    fw_test.add_argument("--out-iface", type=str, default=None, help="Egress interface (default: None)")
+
+    # network capture-start
+    cap_start = net_sub.add_parser("capture-start", help="Start PCAP packet capture on sniffer interface")
+    cap_start.add_argument("--interface", type=str, default="fs-sniff0", help="Sniffer interface (default: fs-sniff0)")
+    cap_start.add_argument("--bridge", type=str, default="fs-br0", help="Bridge interface (default: fs-br0)")
+    cap_start.add_argument("--output", type=str, default=None, help="Output .pcap file path")
+    cap_start.add_argument("--filter", type=str, default=None, help="BPF capture filter expression")
+    cap_start.add_argument("--guest-ip", type=str, default="192.168.1.1", help="Guest IP (default: 192.168.1.1)")
+    cap_start.add_argument("--host-ip", type=str, default="192.168.1.254", help="Host IP (default: 192.168.1.254)")
+    cap_start.add_argument("--force-shim", action="store_true", help="Force unprivileged synthesizer shim mode")
+
+    # network capture-stop
+    net_sub.add_parser("capture-stop", help="Stop active PCAP packet capture session")
+
+    # network capture-status
+    net_sub.add_parser("capture-status", help="Query active PCAP packet capture session and telemetry")
+
+    # network capture-inject
+    cap_inj = net_sub.add_parser("capture-inject", help="Inject a synthetic packet into the active PCAP capture")
+    cap_inj.add_argument("--type", type=str, default="http_request", choices=["http_request", "http_response", "dns_query", "icmp_ping", "c2_beacon"], help="Packet type")
+    cap_inj.add_argument("--src", type=str, default=None, help="Source IP override")
+    cap_inj.add_argument("--dst", type=str, default=None, help="Destination IP override")
+    cap_inj.add_argument("--port", type=int, default=80, help="Destination port")
+
+    # network capture-flow
+    cap_flow = net_sub.add_parser("capture-flow", help="Synthesize and inject realistic IoT traffic flows into PCAP")
+    cap_flow.add_argument("--count", type=int, default=5, help="Number of packets to synthesize (default: 5)")
+    cap_flow.add_argument("--inject-c2", action="store_true", help="Inject simulated malicious C2 beacon packet")
+
+    # network forward-add
+    pf_add = net_sub.add_parser("forward-add", help="Add port forwarding rule from host to emulated guest")
+    pf_add.add_argument("--host-port", type=int, required=True, help="Host port to bind on localhost")
+    pf_add.add_argument("--guest-port", type=int, default=80, help="Target emulated device port (default: 80)")
+    pf_add.add_argument("--host-ip", type=str, default="127.0.0.1", help="Host interface IP (default: 127.0.0.1)")
+    pf_add.add_argument("--guest-ip", type=str, default="192.168.1.1", help="Guest router IP (default: 192.168.1.1)")
+    pf_add.add_argument("--mode", type=str, choices=["auto", "socket-proxy", "iptables-nat"], default="auto", help="Forwarding mode")
+    pf_add.add_argument("--force-shim", action="store_true", help="Force unprivileged socket-proxy mode")
+
+    # network forward-list
+    net_sub.add_parser("forward-list", help="List all active host-to-guest port forwarding channels")
+
+    # network forward-remove
+    pf_rm = net_sub.add_parser("forward-remove", help="Remove an active port forwarding rule")
+    pf_rm.add_argument("--rule-id", type=str, required=True, help="ID of rule to remove (e.g. pf-8080-80)")
+
+    # network http-probe
+    http_pb = net_sub.add_parser("http-probe", help="Execute an external HTTP probe against forwarded web interface")
+    http_pb.add_argument("--host-port", type=int, default=8080, help="Host forwarded port (default: 8080)")
+    http_pb.add_argument("--path", type=str, default="/", help="URI path to probe (default: /)")
+    http_pb.add_argument("--method", type=str, default="GET", choices=["GET", "POST", "HEAD"], help="HTTP method")
+
+    # network http-scan
+    http_sc = net_sub.add_parser("http-scan", help="Run automated diagnostic endpoint scan on emulated web daemon")
+    http_sc.add_argument("--host-port", type=int, default=8080, help="Host forwarded port (default: 8080)")
+
+    # Command: run (Master One-Command Pipeline)
+    run_parser = subparsers.add_parser(
+        "run", help="One-command end-to-end firmware emulation, virtualization & web sandbox"
+    )
+    run_parser.add_argument(
+        "target", type=str, help="Firmware image (.bin) or extracted rootfs directory"
+    )
+    run_parser.add_argument(
+        "--host-port", "-p", type=int, default=8080, help="Host port to forward web interface (default: 8080)"
+    )
+    run_parser.add_argument(
+        "--guest-port", type=int, default=80, help="Target emulated device service port (default: 80)"
+    )
+    run_parser.add_argument(
+        "--binary", "-b", type=str, default=None, help="Explicit web daemon binary override relative to rootfs"
+    )
+    run_parser.add_argument(
+        "--no-capture", action="store_true", help="Disable Track 3 PCAP packet capture"
+    )
+    run_parser.add_argument(
+        "--no-firewall", action="store_true", help="Disable sandbox firewall isolation"
+    )
+    run_parser.add_argument(
+        "--no-probe", action="store_true", help="Skip automated post-launch HTTP health probe"
+    )
+    run_parser.add_argument(
+        "--force-shim", action="store_true", help="Force unprivileged simulation mode"
+    )
+    run_parser.add_argument(
+        "--enable-tracing", "-t", action="store_true", help="Arm Track 2 dynamic API hook injector & QEMU GDB stub"
+    )
+    run_parser.add_argument(
+        "--gdb-port", type=int, default=None, help="Explicit QEMU GDB stub port for Radare2 attachment"
+    )
+    run_parser.add_argument(
+        "--markdown-out", "-m", type=str, default=None, help="Path to export Markdown execution report"
+    )
+    run_parser.add_argument(
+        "--json-out", "-j", type=str, default=None, help="Path to export JSON execution telemetry"
+    )
+
+    # Command: trace (Track 2 Radare2 & Dynamic API Tracer Bridge)
+    trace_parser = subparsers.add_parser(
+        "trace", help="Arm Track 2 dynamic API hook injector, GDB stub & Radare2 trace scripts"
+    )
+    trace_parser.add_argument(
+        "target", type=str, help="Foreign ELF binary or extracted firmware rootfs directory"
+    )
+    trace_parser.add_argument(
+        "--gdb-port", "-g", type=int, default=1234, help="QEMU GDB stub debugging port (default: 1234)"
+    )
+    trace_parser.add_argument(
+        "--r2-script", type=str, default=None, help="Path to export automated Radare2 (.r2) attach script"
+    )
+    trace_parser.add_argument(
+        "--r2pipe-script", type=str, default=None, help="Path to export automated r2pipe Python script"
+    )
+    trace_parser.add_argument(
+        "--preload-c", type=str, default=None, help="Path to export LD_PRELOAD C hook source"
+    )
+    trace_parser.add_argument(
+        "--json-out", "-j", type=str, default=None, help="Path to export Track 2 trace manifest JSON"
+    )
+
+    # Command: teardown (Sandbox Teardown & Resource Cleanup)
+    teardown_parser = subparsers.add_parser(
+        "teardown", help="Tear down emulation resources, release bridges/taps, kill QEMU, flush firewall"
+    )
+    teardown_parser.add_argument(
+        "--rootfs", type=str, default=None, help="RootFS directory to check for active chroot mounts"
+    )
+    teardown_parser.add_argument(
+        "--all", action="store_true", help="Purge all temporary artifacts, captures, and state files"
+    )
+    teardown_parser.add_argument(
+        "--force-shim", action="store_true", help="Force unprivileged simulation mode during flush"
+    )
+    teardown_parser.add_argument(
+        "--markdown-out", "-m", type=str, default=None, help="Path to export Markdown teardown report"
+    )
+    teardown_parser.add_argument(
+        "--json-out", "-j", type=str, default=None, help="Path to export JSON teardown report"
+    )
+
+    # Command: analyze (Track 2 Static Binary & Vulnerability Audit)
+    analyze_parser = subparsers.add_parser(
+        "analyze", help="Perform static ELF parsing, memory layout audit, and banned API scan"
+    )
+    analyze_parser.add_argument("binary", type=str, help="Path to ELF binary to analyze")
+    analyze_parser.add_argument("--json-out", "-j", type=str, default=None, help="Path to export JSON report")
+
+    # Command: scan-creds (Track 2 Hardcoded Credential & Secret Scanner)
+    creds_parser = subparsers.add_parser(
+        "scan-creds", help="Scan firmware or rootfs for hardcoded credentials, private keys, and default logins"
+    )
+    creds_parser.add_argument("target", type=str, help="Firmware file or extracted rootfs directory")
+    creds_parser.add_argument("--json-out", "-j", type=str, default=None, help="Path to export JSON findings")
+
+    # Command: exploit (Track 2 Buffer Overflow PoC Verification)
+    exploit_parser = subparsers.add_parser(
+        "exploit", help="Execute proof-of-concept buffer overflow test against target service"
+    )
+    exploit_parser.add_argument("--host", type=str, default="127.0.0.1", help="Target host (default: 127.0.0.1)")
+    exploit_parser.add_argument("--port", "-p", type=int, default=8080, help="Target port (default: 8080)")
+    exploit_parser.add_argument("--size", "-s", type=int, default=512, help="Payload buffer size (default: 512)")
+    exploit_parser.add_argument("--force-shim", action="store_true", help="Run in simulation mode")
+    exploit_parser.add_argument("--json-out", "-j", type=str, default=None, help="Path to export exploit report")
+
+    # Command: pcap-analyze (Track 3 Deep Packet Inspection & C2 Heuristics)
+    pcap_parser = subparsers.add_parser(
+        "pcap-analyze", help="Analyze PCAP capture file for protocols, anomalies, and C2 botnet beacons"
+    )
+    pcap_parser.add_argument("pcap_file", type=str, help="Path to .pcap capture file")
+    pcap_parser.add_argument("--json-out", "-j", type=str, default=None, help="Path to export PCAP report")
+
+    # Command: tui (Track 3 Interactive Terminal UI Dashboard)
+    tui_parser = subparsers.add_parser(
+        "tui", help="Launch interactive FirmSight terminal dashboard"
+    )
+    tui_parser.add_argument("--interactive", "-i", action="store_true", help="Run continuous live refresh loop")
+
+    # Command: report (Executive HTML Security Audit Generator)
+    report_parser = subparsers.add_parser(
+        "report", help="Generate self-contained executive HTML security audit report"
+    )
+    report_parser.add_argument("--out", "-o", type=str, default=None, help="Output HTML report path")
 
     args = parser.parse_args()
 
@@ -138,7 +497,818 @@ def main() -> None:
         ini_file = nvram.write_to_rootfs(rootfs)
         print(f"[+] Mock NVRAM successfully initialized in: {ini_file.parent}")
         print(f"[+] Generated: nvram.ini, nvram.conf, nvram_env.sh")
-        print(f"[+] LAN IP: {nvram.get('lan_ipaddr')} | Router Model: {nvram.get('router_model')}")
+    elif args.command == "prep-rootfs":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        preparer = RootFSPreparer(rootfs)
+        report = preparer.prepare()
+        print(f"[+] RootFS Preparation: {report.status.upper()}")
+        print(f"[+] Target Architecture: {report.architecture}")
+        print(f"[+] QEMU Static Binary: {report.qemu_static_bin} (copied: {report.qemu_copied})")
+        print(f"[+] Created Directories: {len(report.created_directories)}")
+        print(f"[+] Configured Files: {', '.join(report.configured_files) or 'None'}")
+        if report.warnings:
+            print("[!] Notices / Warnings:")
+            for w in report.warnings:
+                print(f"    - {w}")
+
+    elif args.command == "execute":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        runner = ChrootRunner(rootfs)
+        res = runner.run(args.binary, args=args.args, timeout=args.timeout)
+        print(f"[+] Execution completed in {res.duration_seconds}s (Mode: {res.emulation_mode})")
+        print(f"[+] Exit Code: {res.exit_code} (Timed out: {res.timed_out})")
+        if res.stdout:
+            print(f"\n[+] Standard Output:\n{res.stdout.strip()}")
+        if res.stderr:
+            print(f"\n[!] Standard Error:\n{res.stderr.strip()}")
+
+    elif args.command == "diagnose":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        runner = ChrootRunner(rootfs)
+        exec_res = runner.run(args.binary, timeout=args.timeout)
+        report = HealthMonitor.diagnose(exec_res, binary_rel_path=args.binary, rootfs_dir=rootfs)
+
+        print(f"[*] Diagnostics Report for: {report.binary_path}")
+        print(f"[+] Emulation Status: {report.status}")
+        print(f"[+] Exit Code:        {report.exit_code}")
+        if report.signal_name:
+            print(f"[!] Crash Signal:     {report.signal_name}")
+        if report.missing_libraries:
+            print(f"[!] Missing Libs:     {', '.join(report.missing_libraries)}")
+        if report.issues:
+            print("\n[!] Issues Detected:")
+            for issue in report.issues:
+                print(f"    - [{issue.severity}] {issue.description}")
+        if report.recommendations:
+            print("\n[+] Recommended Remediation:")
+            for rec in report.recommendations:
+                print(f"    - {rec}")
+
+    elif args.command == "launch-web":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        launcher = ServiceLauncher(rootfs)
+        discovered = launcher.discover_services()
+        print(f"[*] Discovered {len(discovered)} potential embedded services:")
+        for svc in discovered:
+            print(f"    - {svc.name} ({svc.binary_path}) -> Default Port: {svc.default_port}")
+
+        if not discovered:
+            print("[-] No web servers found to launch.", file=sys.stderr)
+            sys.exit(1)
+
+        res = launcher.launch(port=args.port, timeout=args.timeout)
+        print(f"\n[+] Launched Service: {res.service.name} (Port: {res.port})")
+        print(f"[+] Status:           {'RUNNING' if res.is_running else 'FAILED'}")
+        print(f"[+] Execution Mode:   {res.execution.emulation_mode}")
+        if res.notes:
+            for note in res.notes:
+                print(f"    - {note}")
+        if res.execution.stdout:
+            print(f"\n[+] Daemon Output:\n{res.execution.stdout.strip()}")
+        if res.execution.stderr:
+            print(f"\n[!] Daemon Errors / Warnings:\n{res.execution.stderr.strip()}")
+
+    elif args.command == "init-dev":
+        rootfs = Path(args.rootfs)
+        if not rootfs.exists() or not rootfs.is_dir():
+            print(f"[-] Error: RootFS directory not found: {rootfs}", file=sys.stderr)
+            sys.exit(1)
+
+        manager = DeviceNodeManager(rootfs)
+        report = manager.provision_all(create_mtd=not args.no_mtd)
+        print(f"[+] Device Node Provisioning: {report.status.upper()}")
+        print(f"[+] Provisioning Mode:        {report.provisioning_mode}")
+        print(f"[+] Created Device Nodes:     {', '.join(report.created_nodes)}")
+        if report.mtd_partitions:
+            print(f"[+] Mock MTD Partitions:     {', '.join(report.mtd_partitions)}")
+
+    elif args.command == "daemon":
+        mgr = DaemonManager()
+        if args.daemon_action == "start":
+            d_proc = mgr.spawn(args.rootfs, args.binary, name=args.name)
+            print(f"[+] Started daemon '{d_proc.name}' with PID {d_proc.pid}")
+            print(f"[+] Streaming logs to: {d_proc.log_file}")
+        elif args.daemon_action == "list":
+            daemons = mgr.list_active()
+            print(f"[*] Total Tracked Daemons: {len(daemons)}")
+            for d in daemons:
+                state = "ALIVE" if d.is_alive else "STOPPED"
+                print(f"    - {d.name:<15} (PID: {d.pid:<6}) [{state}] Uptime: {d.uptime_seconds}s")
+        elif args.daemon_action == "status":
+            st = mgr.poll(args.name)
+            if not st:
+                print(f"[-] No daemon found with name: {args.name}", file=sys.stderr)
+                sys.exit(1)
+            state = "ALIVE" if st.is_alive else "STOPPED"
+            print(f"[+] Daemon:  {st.name} (PID: {st.pid}) [{state}]")
+            print(f"[+] Uptime:  {st.uptime_seconds}s")
+            if st.recent_logs:
+                print("\n[+] Recent Logs:")
+                for line in st.recent_logs:
+                    print(f"    {line}")
+        elif args.daemon_action == "stop":
+            stopped = mgr.stop(args.name)
+            if stopped:
+                print(f"[+] Successfully stopped daemon '{args.name}'.")
+            else:
+                print(f"[-] Daemon '{args.name}' not found or already stopped.", file=sys.stderr)
+
+    elif args.command == "inspect-squashfs":
+        target = Path(args.file)
+        if not target.exists():
+            print(f"[-] Error: Firmware file not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        superblocks = SquashFSHandler.scan_superblocks(target)
+        print(f"[*] SquashFS Partition Scan for: {target.name}")
+        print(f"[*] Discovered {len(superblocks)} valid SquashFS superblock(s):\n")
+
+        for i, sb in enumerate(superblocks, 1):
+            print(f"--- Partition #{i} ---")
+            print(f"  Offset:        0x{sb.offset:08X} ({sb.offset} bytes)")
+            print(f"  Version:       SquashFS {sb.version} ({sb.endianness}-endian)")
+            print(f"  Compression:   {sb.compression_name.upper()} (ID: {sb.compression_id})")
+            print(f"  Block Size:    {sb.block_size} bytes ({sb.block_size // 1024} KB)")
+            print(f"  Inodes:        {sb.inode_count}")
+            print(f"  Payload Size:  {sb.bytes_used} bytes ({sb.bytes_used / (1024*1024):.2f} MB)")
+            print(f"  Created:       {sb.creation_time_str}")
+
+            if args.carve:
+                out_dir = Path(args.output_dir) if args.output_dir else target.parent / f"{target.stem}_partitions"
+                res = SquashFSHandler.carve_and_unpack(target, sb, out_dir, partition_idx=i)
+                print(f"  [+] Carved Blob:  {res.carved_blob_path}")
+                if res.unpacked_dir and res.unpacked_dir.exists():
+                    print(f"  [+] Unpacked Dir: {res.unpacked_dir} ({res.file_count} files)")
+                if res.error:
+                    print(f"  [!] Notice:       {res.error}")
+            print()
+
+    elif args.command == "emulate-proof":
+        target = Path(args.target)
+        if not target.exists():
+            print(f"[-] Error: Target path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        engine = EmulationProofEngine()
+        print(f"[*] Initiating End-to-End Emulation Proof for: {target.name}")
+        print("[*] Verifying Phase 1 (Foundations) and Phase 2 (Virtualization) subsystems...\n")
+
+        if target.is_dir():
+            report = engine.verify_rootfs(
+                rootfs_dir=target,
+                port=args.port,
+                binary_override=args.binary,
+            )
+        else:
+            report = engine.verify_firmware(
+                firmware_path=target,
+                port=args.port,
+                binary_override=args.binary,
+            )
+
+        print("--- [MID-REVIEW MILESTONE REPORT] ---")
+        print(f"Target:       {report.target_path.name}")
+        print(f"Arch:         {report.architecture} ({report.endianness}-endian)")
+        print(f"Foreign Mode: {'Yes (QEMU Static)' if report.is_foreign_arch else 'Host Native'}")
+        print(f"Verdict:      {report.overall_verdict}\n")
+
+        print("Verification Matrix:")
+        for c in report.checks:
+            mark = "[PASS]" if c.passed else "[FAIL]"
+            print(f"  {mark:6} {c.check_id:14} [{c.phase}]: {c.title}")
+            print(f"         └─ {c.details}")
+
+        if args.markdown_out:
+            md_path = Path(args.markdown_out)
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(report.export_markdown(), encoding="utf-8")
+            print(f"\n[+] Exported Markdown proof report to: {md_path}")
+
+        if args.json_out:
+            json_path = Path(args.json_out)
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            json_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+            print(f"[+] Exported JSON telemetry to: {json_path}")
+
+        if report.overall_verdict != "PASSED":
+            sys.exit(1)
+
+    elif args.command == "network":
+        net_mgr = NetworkBridgeManager()
+
+        if args.net_action == "setup":
+            print(f"[*] Provisioning virtual network bridge '{args.bridge}' with TAP '{args.tap}'...")
+            status = net_mgr.setup_bridge_network(
+                tap_name=args.tap,
+                bridge_name=args.bridge,
+                force_shim=args.force_shim,
+            )
+            print(f"[+] Network Bridge Status: {'ACTIVE' if status.is_active else 'INACTIVE'}")
+            print(f"[+] Operational Mode:     {status.mode}")
+            print(f"[+] Bridge Interface:     {status.bridge_name}")
+            for t in status.tap_interfaces:
+                print(f"    └─ TAP Interface:     {t.name} (MAC: {t.mac_address}, MTU: {t.mtu}, State: {t.state})")
+            print(f"[+] State cached in:      {net_mgr.state_file}")
+
+        elif args.net_action == "status":
+            status = net_mgr.get_status()
+            if not status or not status.is_active:
+                print("[-] No active virtual network bridge found in current workspace.")
+            else:
+                print(f"[*] Virtual Network Bridge: {status.bridge_name} [ACTIVE]")
+                print(f"    Mode:       {status.mode}")
+                print(f"    Created At: {status.created_at}")
+                print(f"    Interfaces ({len(status.tap_interfaces)}):")
+                for t in status.tap_interfaces:
+                    print(f"      - {t.name:10} MAC: {t.mac_address} | State: {t.state} | Shim: {t.is_shim}")
+
+        elif args.net_action == "teardown":
+            print("[*] Tearing down virtual network bridge and TAP devices...")
+            success = net_mgr.teardown_bridge_network(tap_name=args.tap, bridge_name=args.bridge)
+            if success:
+                print("[+] Successfully released virtual network interfaces.")
+            else:
+                print("[-] Error releasing network interfaces.", file=sys.stderr)
+
+        elif args.net_action == "route-setup":
+            r_mgr = NetworkRouter()
+            sub = r_mgr.calculate_subnet(gateway_ip=args.guest_ip, netmask=args.netmask)
+            print(f"[*] Configuring virtual subnet {sub.cidr} on bridge '{args.bridge}'...")
+            r_status = r_mgr.setup_guest_routing(bridge_name=args.bridge, subnet=sub, force_shim=args.force_shim)
+            print(f"[+] Routing Status:       {'ACTIVE' if r_status.is_active else 'INACTIVE'}")
+            print(f"[+] Operational Mode:     {r_status.mode}")
+            print(f"[+] Subnet CIDR:          {r_status.subnet.cidr}")
+            print(f"[+] Host Bridge IP:       {r_status.subnet.host_ip} ({r_status.subnet.netmask})")
+            print(f"[+] Guest Gateway IP:     {r_status.subnet.gateway_ip}")
+            print(f"[+] IPv4 Forwarding:      {'ENABLED' if r_status.forwarding_enabled else 'DISABLED/SHIM'}")
+            print(f"[+] Route Rules ({len(r_status.routes)}):")
+            for r in r_status.routes:
+                print(f"    └─ Dest: {r.destination:16} via {r.gateway:15} dev {r.interface} (metric {r.metric})")
+
+        elif args.net_action == "route-status":
+            r_mgr = NetworkRouter()
+            r_status = r_mgr.get_routing_status()
+            if not r_status or not r_status.is_active:
+                print("[-] No active virtual routing configuration found in current workspace.")
+            else:
+                print(f"[*] Virtual Subnet Routing: {r_status.bridge_name} [ACTIVE]")
+                print(f"    Mode:          {r_status.mode}")
+                print(f"    Subnet:        {r_status.subnet.cidr}")
+                print(f"    Host IP:       {r_status.subnet.host_ip}")
+                print(f"    Guest IP:      {r_status.subnet.gateway_ip}")
+                print(f"    Forwarding:    {r_status.forwarding_enabled}")
+                print(f"    Routes ({len(r_status.routes)}):")
+                for r in r_status.routes:
+                    print(f"      - {r.destination:16} via {r.gateway:15} dev {r.interface} (metric {r.metric})")
+
+        elif args.net_action == "route-teardown":
+            r_mgr = NetworkRouter()
+            print("[*] Tearing down virtual IP routing rules...")
+            success = r_mgr.teardown_guest_routing(bridge_name=args.bridge)
+            if success:
+                print("[+] Successfully released virtual routing configurations.")
+            else:
+                print("[-] Error releasing virtual routing.", file=sys.stderr)
+
+        elif args.net_action == "firewall-apply":
+            fw_mgr = FirewallManager()
+            print(f"[*] Configuring sandbox firewall on bridge '{args.bridge}'...")
+            status = fw_mgr.apply_rules(
+                bridge_name=args.bridge,
+                sniffer_iface=args.sniffer,
+                guest_ip=args.guest_ip,
+                host_ip=args.host_ip,
+                subnet_cidr=args.subnet,
+                block_wan=not args.no_wan_block,
+                mirror_sniffer=not args.no_sniffer_mirror,
+                force_shim=args.force_shim,
+            )
+            print(f"[+] Firewall Status:      {'ACTIVE' if status.is_active else 'INACTIVE'}")
+            print(f"[+] Operational Mode:     {status.mode}")
+            print(f"[+] Security Policy:      {status.policy}")
+            print(f"[+] Bridge Interface:     {status.bridge_name}")
+            print(f"[+] Sniffer Target:       {status.sniffer_interface} (Mirroring: {'ENABLED' if status.packet_mirroring else 'DISABLED'})")
+            print(f"[+] WAN Isolation:        {'ENABLED (Egress Blocked)' if status.wan_isolation else 'DISABLED'}")
+            print(f"[+] Active Rules ({len(status.rules)}):")
+            for r in status.rules:
+                proto = f"p:{r.protocol}" if r.protocol != "all" else "all"
+                port = f"dport:{r.dport}" if r.dport else ""
+                print(f"    └─ [{r.table.upper()}:{r.chain}] {proto} {port} -> {r.action} ({r.comment})")
+            print(f"[+] Generated Script:     {fw_mgr.script_file}")
+
+        elif args.net_action == "firewall-status":
+            fw_mgr = FirewallManager()
+            status = fw_mgr.get_status()
+            if not status or not status.is_active:
+                print("[-] No active sandbox firewall rules found in current workspace.")
+            else:
+                print(f"[*] FirmSight Sandbox Firewall: {status.bridge_name} [ACTIVE]")
+                print(f"    Mode:             {status.mode}")
+                print(f"    Policy:           {status.policy}")
+                print(f"    Host IP:          {status.host_ip}")
+                print(f"    Guest IP:         {status.guest_ip}")
+                print(f"    Subnet CIDR:      {status.subnet_cidr}")
+                print(f"    WAN Isolation:    {status.wan_isolation}")
+                print(f"    Sniffer Target:   {status.sniffer_interface} (Mirroring: {status.packet_mirroring})")
+                print(f"    Created At:       {status.created_at}")
+                print(f"    Total Rules:      {len(status.rules)}")
+                for r in status.rules:
+                    proto = f"proto={r.protocol}" if r.protocol != "all" else "all"
+                    port = f"port={r.dport}" if r.dport else ""
+                    print(f"      - {r.chain:<11} {proto:<10} {port:<10} -> {r.action:<6} | {r.comment}")
+
+        elif args.net_action == "firewall-flush":
+            fw_mgr = FirewallManager()
+            print("[*] Flushing sandbox firewall rules and clearing state...")
+            success = fw_mgr.flush_rules(force_shim=args.force_shim)
+            if success:
+                print("[+] Successfully flushed sandbox firewall rules.")
+            else:
+                print("[-] Error flushing firewall rules.", file=sys.stderr)
+
+        elif args.net_action == "firewall-test":
+            fw_mgr = FirewallManager()
+            eval_res = fw_mgr.evaluate_packet(
+                source_ip=args.src,
+                dest_ip=args.dst,
+                protocol=args.proto,
+                dest_port=args.port,
+                in_interface=args.in_iface,
+                out_interface=args.out_iface,
+            )
+            print("--- [SANDBOX PACKET EVALUATION RESULT] ---")
+            print(f"Flow:        {eval_res.source_ip} -> {eval_res.dest_ip}:{eval_res.dest_port} ({eval_res.protocol.upper()})")
+            print(f"Interface:   {eval_res.in_interface} -> {eval_res.out_interface or 'N/A'}")
+            print(f"Verdict:     {eval_res.verdict}")
+            print(f"Sniffer TEE: {'MIRRORED to ' + str(eval_res.sniffer_interface) if eval_res.mirrored_to_sniffer else 'NO'}")
+            print(f"Rule:        {eval_res.matched_rule or 'N/A'}")
+            print(f"Reason:      {eval_res.reason}")
+
+        elif args.net_action == "capture-start":
+            pcap_mgr = PCAPBridge()
+            print(f"[*] Initializing PCAP packet capture on interface '{args.interface}'...")
+            session = pcap_mgr.start_capture(
+                interface=args.interface,
+                bridge_name=args.bridge,
+                output_pcap=args.output,
+                filter_expr=args.filter,
+                guest_ip=args.guest_ip,
+                host_ip=args.host_ip,
+                force_shim=args.force_shim,
+            )
+            print(f"[+] Capture Session:   {session.session_id} [ACTIVE]")
+            print(f"[+] Operational Mode:  {session.mode}")
+            print(f"[+] Sniffer Interface: {session.interface} (Bridge: {session.bridge_name})")
+            print(f"[+] Output PCAP:       {session.pcap_file}")
+            print(f"[+] Track 3 Manifest:  {session.manifest_file}")
+            if session.filter_expr:
+                print(f"[+] BPF Filter:        {session.filter_expr}")
+
+        elif args.net_action == "capture-stop":
+            pcap_mgr = PCAPBridge()
+            print("[*] Stopping active PCAP packet capture session...")
+            session = pcap_mgr.stop_capture()
+            if not session:
+                print("[-] No active PCAP capture session found in current workspace.")
+            else:
+                print(f"[+] Successfully stopped capture session: {session.session_id}")
+                print(f"[+] Total Packets:    {session.packet_count}")
+                print(f"[+] Total Bytes:      {session.byte_count}")
+                print(f"[+] Saved PCAP File:  {session.pcap_file}")
+                print(f"[+] Track 3 Manifest: {session.manifest_file}")
+
+        elif args.net_action == "capture-status":
+            pcap_mgr = PCAPBridge()
+            session = pcap_mgr.get_active_session()
+            if not session:
+                manifest_data = pcap_mgr.export_track3_manifest()
+                if manifest_data:
+                    print(f"[*] Most Recent PCAP Capture Session: {manifest_data.get('session_id')} [INACTIVE]")
+                    print(f"    Mode:          {manifest_data.get('mode')}")
+                    print(f"    Interface:     {manifest_data.get('interface')} ({manifest_data.get('bridge_name')})")
+                    print(f"    Packets:       {manifest_data.get('packet_count')}")
+                    print(f"    Bytes:         {manifest_data.get('byte_count')}")
+                    print(f"    PCAP File:     {manifest_data.get('pcap_file')}")
+                    print(f"    Protocols:     {manifest_data.get('protocols')}")
+                else:
+                    print("[-] No active or recorded PCAP capture session found.")
+            else:
+                print(f"[*] Active PCAP Capture Session: {session.session_id} [ACTIVE]")
+                print(f"    Mode:          {session.mode}")
+                print(f"    Interface:     {session.interface} (Bridge: {session.bridge_name})")
+                print(f"    Packets:       {session.packet_count}")
+                print(f"    Bytes:         {session.byte_count}")
+                print(f"    PCAP File:     {session.pcap_file}")
+                print(f"    Protocols:     {session.protocols}")
+                print(f"    Started At:    {session.start_time}")
+
+        elif args.net_action == "capture-inject":
+            pcap_mgr = PCAPBridge()
+            session = pcap_mgr.get_active_session()
+            if not session:
+                print("[-] No active capture session. Starting background session first...")
+                session = pcap_mgr.start_capture()
+            success = pcap_mgr.inject_packet(
+                packet_type=args.type,
+                src_ip=args.src,
+                dst_ip=args.dst,
+                dst_port=args.port,
+            )
+            if success:
+                print(f"[+] Injected synthetic packet '{args.type}' into {session.pcap_file}")
+                print(f"[+] Updated packet count: {session.packet_count}")
+            else:
+                print("[-] Failed to inject packet.", file=sys.stderr)
+
+        elif args.net_action == "capture-flow":
+            pcap_mgr = PCAPBridge()
+            session = pcap_mgr.get_active_session()
+            if not session:
+                print("[-] No active capture session. Starting background session first...")
+                session = pcap_mgr.start_capture()
+            print(f"[*] Synthesizing realistic IoT traffic flow ({args.count} packets, inject_c2={args.inject_c2})...")
+            count = pcap_mgr.inject_traffic_flow(count=args.count, inject_c2=args.inject_c2)
+            print(f"[+] Successfully synthesized and recorded {count} packets.")
+            print(f"[+] Output PCAP:      {session.pcap_file}")
+            print(f"[+] Protocol stats:   {session.protocols}")
+
+        elif args.net_action == "forward-add":
+            pf = PortForwarder()
+            rule = pf.add_forward(
+                host_port=args.host_port,
+                guest_port=args.guest_port,
+                host_ip=args.host_ip,
+                guest_ip=args.guest_ip,
+                mode=args.mode,
+                force_shim=args.force_shim,
+            )
+            print(f"[+] Configured Port Forward: {rule.rule_id} [ACTIVE]")
+            print(f"[+] Forwarding Mapping:     {rule.host_ip}:{rule.host_port} -> {rule.guest_ip}:{rule.guest_port}")
+            print(f"[+] Operational Mode:       {rule.mode}")
+            print(f"[+] Quick Curl Verification: {rule.to_curl_command()}")
+
+        elif args.net_action == "forward-list":
+            pf = PortForwarder()
+            forwards = pf.list_forwards()
+            if not forwards:
+                print("[-] No active port forwarders configured in current workspace.")
+            else:
+                print(f"[*] Active Port Forwarders ({len(forwards)}):")
+                for r in forwards:
+                    print(f"    - [{r.rule_id}] {r.host_ip}:{r.host_port} -> {r.guest_ip}:{r.guest_port} ({r.mode}) | Conns: {r.connections_handled}")
+
+        elif args.net_action == "forward-remove":
+            pf = PortForwarder()
+            success = pf.remove_forward(args.rule_id)
+            if success:
+                print(f"[+] Removed port forward rule: {args.rule_id}")
+            else:
+                print(f"[-] Rule {args.rule_id} not found or failed to remove.", file=sys.stderr)
+
+        elif args.net_action == "http-probe":
+            harness = HTTPTriggerHarness()
+            print(f"[*] Sending external HTTP {args.method} probe to port {args.host_port} (path: {args.path})...")
+            res = harness.probe_endpoint(target=args.host_port, path=args.path, method=args.method)
+            print("--- [HTTP PROBE RESULT] ---")
+            print(f"URL:          {res.url}")
+            print(f"Status Code:  {res.status_code or 'UNREACHABLE'}")
+            print(f"Latency:      {res.response_time_ms} ms")
+            if res.server_banner:
+                print(f"Server:       {res.server_banner}")
+            if res.error:
+                print(f"Notice:       {res.error}")
+            print(f"Curl Command: {res.curl_command}")
+            if res.body_snippet:
+                print(f"\nResponse Preview:\n{res.body_snippet.strip()}")
+
+        elif args.net_action == "http-scan":
+            harness = HTTPTriggerHarness()
+            print(f"[*] Launching automated diagnostic HTTP scan against emulated router port {args.host_port}...")
+            results = harness.run_diagnostic_scan(host_port=args.host_port)
+            print("----------------------------------------------------------------------")
+            print(f"{'Endpoint':<25} {'Status':<10} {'Latency':<12} {'Server Banner':<15}")
+            print("----------------------------------------------------------------------")
+            for r in results:
+                status_str = str(r.status_code) if r.status_code else "FAIL"
+                server_str = r.server_banner or "N/A"
+                print(f"{r.url.split(str(args.host_port))[-1]:<25} {status_str:<10} {r.response_time_ms:<6} ms    {server_str:<15}")
+            print("----------------------------------------------------------------------")
+
+    elif args.command == "run":
+        target = Path(args.target)
+        if not target.exists():
+            print(f"[-] Error: Target path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: One-Command IoT Firmware Emulation & Analysis Sandbox   ]")
+        print("[======================================================================]")
+        print(f"[*] Target: {target.name} ({'Directory RootFS' if target.is_dir() else 'Firmware Binary'})")
+        print(f"[*] Forwarding Web Interface to Host Port: {args.host_port} -> Guest Port: {args.guest_port}")
+        print("[*] Executing 10-Stage Pipeline (Phase 1 -> Phase 2 -> Phase 3)...\n")
+
+        cfg = OrchestrationConfig(
+            target_path=target,
+            host_port=args.host_port,
+            guest_port=args.guest_port,
+            enable_capture=not args.no_capture,
+            enable_firewall=not args.no_firewall,
+            probe_after_launch=not args.no_probe,
+            force_shim=args.force_shim,
+            enable_tracing=args.enable_tracing,
+            gdb_port=args.gdb_port,
+            service_binary_override=args.binary,
+        )
+
+        orchestrator = MasterOrchestrator()
+        result = orchestrator.run(cfg)
+
+        for s in result.stages:
+            badge = "[PASS]" if s.status == "PASSED" else ("[SKIP]" if s.status == "SKIPPED" else "[FAIL]")
+            print(f"  {badge:6} Stage {s.stage_id:<2}: {s.name:<52} ({s.duration_seconds:.2f}s)")
+            print(f"         └─ {s.details}")
+
+        print("\n[====================== [EMULATION SUMMARY] ======================]")
+        print(f"Target:        {result.target_name}")
+        print(f"Architecture:  {result.architecture} ({result.endianness}-endian)")
+        print(f"Verdict:       {result.overall_status}")
+        print(f"Duration:      {result.total_duration_seconds:.2f} seconds")
+        print(f"Web Dashboard: {result.forwarded_url}")
+        print(f"Verification:  {result.curl_command}")
+        if result.pcap_capture_file:
+            print(f"PCAP Capture:  {result.pcap_capture_file}")
+        if result.trace_manifest_file:
+            print(f"Trace Manifest:{result.trace_manifest_file}")
+        if result.gdb_connect_command:
+            print(f"Radare2 Attach:{result.gdb_connect_command}")
+        if result.vulnerabilities_found > 0:
+            print(f"Vulnerabilities:{result.vulnerabilities_found} flagged")
+        if result.probe_result:
+            p_status = result.probe_result.status_code or "UNREACHABLE"
+            print(f"Health Probe:  HTTP {p_status} (Latency: {result.probe_result.response_time_ms}ms | Server: {result.probe_result.server_banner or 'N/A'})")
+        report_html = Path("sandbox_workspace/reports/firmware_audit_report.html")
+        if report_html.exists():
+            print(f"HTML Report:   {report_html}")
+        print("[==================================================================]")
+
+        if args.markdown_out:
+            md_path = Path(args.markdown_out)
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(result.export_markdown(), encoding="utf-8")
+            print(f"\n[+] Exported Markdown summary report to: {md_path}")
+
+        if args.json_out:
+            json_path = Path(args.json_out)
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            json_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+            print(f"[+] Exported JSON execution telemetry to: {json_path}")
+
+        if result.overall_status == "FAILED":
+            sys.exit(1)
+
+    elif args.command == "trace":
+        target = Path(args.target)
+        if not target.exists():
+            print(f"[-] Error: Target path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: Track 2 Dynamic API Hook Injector & Radare2 Bridge       ]")
+        print("[======================================================================]")
+        print(f"[*] Target Binary: {target.name}")
+        print(f"[*] QEMU GDB Stub Port: {args.gdb_port}")
+
+        injector = DynamicHookInjector()
+        session = injector.prepare_gdb_stub(target.name, port=args.gdb_port)
+        events = injector.simulate_trace_for_binary(target)
+        manifest_path = injector.export_manifest(events, session=session, output_file=args.json_out)
+
+        print(f"\n[+] QEMU GDB Stub armed: localhost:{session.gdb_port}")
+        print(f"[+] Radare2 Connect: {session.r2_connect_command}")
+        print(f"[+] GDB Multiarch:   {session.gdb_attach_command}")
+        print(f"[+] r2pipe Binding:  {session.r2pipe_init_code}")
+
+        if args.r2_script:
+            r2_path = Path(args.r2_script)
+            r2_path.parent.mkdir(parents=True, exist_ok=True)
+            r2_path.write_text(Radare2Bridge.generate_r2_script(session.gdb_port), encoding="utf-8")
+            print(f"[+] Exported Radare2 (.r2) attach script to: {r2_path}")
+
+        if args.r2pipe_script:
+            p_path = Path(args.r2pipe_script)
+            p_path.parent.mkdir(parents=True, exist_ok=True)
+            p_path.write_text(Radare2Bridge.generate_r2pipe_script(session.gdb_port, target.name), encoding="utf-8")
+            print(f"[+] Exported automated r2pipe script to: {p_path}")
+
+        if args.preload_c:
+            c_path = Path(args.preload_c)
+            c_path.parent.mkdir(parents=True, exist_ok=True)
+            c_path.write_text(injector.generate_preload_hook_source(), encoding="utf-8")
+            print(f"[+] Exported LD_PRELOAD C hook source to: {c_path}")
+
+        print(f"\n[+] Dynamic API Invocations Intercepted: {len(events)}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"{'TIMESTAMP':<24} {'FUNCTION':<10} {'RISK':<10} {'DETAILS / VULNERABILITY HEURISTIC'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for e in events:
+            vuln_str = e.vulnerability_indicator or f"Args: {', '.join(e.arguments)[:50]}"
+            print(f"{e.timestamp[:19]:<24} {e.function:<10} {e.risk_level:<10} {vuln_str}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"[+] Trace Manifest: {manifest_path}")
+
+    elif args.command == "teardown":
+        print("[======================================================================]")
+        print("[  FirmSight: Sandbox Teardown & Resource Cleanup                      ]")
+        print("[======================================================================]")
+        cleaner = SandboxCleanupManager()
+        report = cleaner.teardown_all(
+            rootfs_dir=args.rootfs,
+            purge_all=args.all,
+            force_shim=args.force_shim,
+        )
+        print(f"\n[*] Execution Duration: {report.duration_seconds:.2f}s")
+        print(f"[*] Total Released:     {report.total_cleaned}")
+        print(f"[*] Total Failed:       {report.total_failed}")
+        print(f"[*] Total Skipped:      {report.total_skipped}")
+        print("\n--------------------------------------------------------------------------------------------------------")
+        print(f"{'CATEGORY':<12} {'TARGET RESOURCE':<35} {'STATUS':<10} {'DETAILS'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for item in report.items:
+            badge = "[OK]" if item.status == "SUCCESS" else ("[SKIP]" if item.status == "SKIPPED" else "[FAIL]")
+            print(f"{item.category:<12} {item.resource_id:<35} {badge:<10} {item.details}")
+        print("--------------------------------------------------------------------------------------------------------")
+
+        if args.markdown_out:
+            m_path = Path(args.markdown_out)
+            m_path.parent.mkdir(parents=True, exist_ok=True)
+            m_path.write_text(report.export_markdown(), encoding="utf-8")
+            print(f"[+] Exported Markdown teardown report to: {m_path}")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+            print(f"[+] Exported JSON teardown report to: {j_path}")
+
+    elif args.command == "analyze":
+        target = Path(args.binary)
+        if not target.exists():
+            print(f"[-] Error: Target binary not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: Track 2 Static ELF, Memory Layout & Vulnerability Audit  ]")
+        print("[======================================================================]")
+        scanner = VulnerabilityScanner(target)
+        audit_rep = scanner.audit()
+
+        print(f"[*] Target:       {target.name}")
+        print(f"[*] Architecture: {audit_rep.architecture}")
+        print(f"[*] Risk Score:   {audit_rep.risk_score} / 100 ({audit_rep.overall_verdict})")
+
+        print("\n[+] Binary Hardening Mitigations:")
+        for flag, val in audit_rep.hardening_flags.items():
+            badge = "[ENABLED]" if val else "[DISABLED]"
+            print(f"    - {flag:<16}: {badge}")
+
+        print(f"\n[+] Dangerous Banned C Library Calls: {len(audit_rep.banned_functions)}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"{'FUNCTION':<12} {'SEVERITY':<10} {'CWE ID':<10} {'VULNERABILITY TYPE':<22} {'DESCRIPTION'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for f in audit_rep.banned_functions:
+            print(f"{f.function_name:<12} {f.severity:<10} {f.cwe_id:<10} {f.vulnerability_type:<22} {f.description[:42]}...")
+        print("--------------------------------------------------------------------------------------------------------")
+
+        print(f"\n[+] Virtual Memory Layout ({len(audit_rep.memory_segments)} segments):")
+        for s in audit_rep.memory_segments:
+            rwx_tag = " [RWX - VULNERABLE]" if s.is_rwx else ""
+            print(f"    - {s.vaddr_start} - {s.vaddr_end} ({s.size_bytes:>8} bytes) Perms: {s.permissions}{rwx_tag}")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps(audit_rep.to_dict(), indent=2), encoding="utf-8")
+            print(f"\n[+] Exported JSON audit report to: {j_path}")
+
+    elif args.command == "scan-creds":
+        target = Path(args.target)
+        if not target.exists():
+            print(f"[-] Error: Target path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: Track 2 Hardcoded Credential & Secret Scanner           ]")
+        print("[======================================================================]")
+        scanner = CredentialScanner(target)
+        findings = scanner.scan()
+
+        print(f"[*] Scanned Target: {target}")
+        print(f"[*] Total Secrets Identified: {len(findings)}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"{'SEVERITY':<10} {'RULE TYPE':<24} {'OFFSET':<12} {'SNIPPET':<20} {'DESCRIPTION'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for c in findings:
+            print(f"{c.severity:<10} {c.rule_name:<24} 0x{c.offset:<10x} {c.snippet:<20} {c.description[:35]}")
+        print("--------------------------------------------------------------------------------------------------------")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps([f.to_dict() for f in findings], indent=2), encoding="utf-8")
+            print(f"\n[+] Exported JSON findings to: {j_path}")
+
+    elif args.command == "exploit":
+        print("[======================================================================]")
+        print("[  FirmSight: Track 2 Proof-of-Concept Buffer Overflow Exploit Tester  ]")
+        print("[======================================================================]")
+        print(f"[*] Target Endpoint: {args.host}:{args.port}")
+        print(f"[*] Malicious Payload Length: {args.size} bytes (Cyclic pattern)")
+
+        harness = ExploitHarness(host=args.host, port=args.port)
+        res = harness.trigger_exploit(payload_size=args.size, force_shim=args.force_shim)
+
+        print(f"\n[+] Exploit Execution Status: {res.status}")
+        print(f"[+] Vulnerability Target:     {res.vulnerability}")
+        print(f"[+] Outcome Details:          {res.details}")
+
+        if res.crashed_registers:
+            regs = res.crashed_registers
+            print("\n[+] Captured CPU Register State at Fault:")
+            print(f"    - PC (Instruction Pointer): {regs.pc}  [HIJACKED]")
+            print(f"    - LR (Return Address):      {regs.lr}")
+            print(f"    - SP (Stack Pointer):       {regs.sp}")
+            print(f"    - R0: {regs.r0}  R1: {regs.r1}  R2: {regs.r2}  R3: {regs.r3}")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps(res.to_dict(), indent=2), encoding="utf-8")
+            print(f"\n[+] Exported JSON exploit telemetry to: {j_path}")
+
+    elif args.command == "pcap-analyze":
+        pcap_file = Path(args.pcap_file)
+        if not pcap_file.exists():
+            print(f"[-] Error: PCAP file not found: {pcap_file}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[======================================================================]")
+        print("[  FirmSight: Track 3 PCAP Deep Packet Inspection & C2 Threat Monitor  ]")
+        print("[======================================================================]")
+        analyzer = PCAPAnalyzer(pcap_file)
+        report = analyzer.analyze()
+
+        print(f"[*] Capture File:   {pcap_file.name}")
+        print(f"[*] Total Packets:  {report.total_packets}")
+        print(f"[*] Total Volume:   {report.total_bytes} bytes")
+        print(f"[*] Threat Level:   {report.threat_level} (Score: {report.threat_score}/100)")
+
+        print("\n[+] Protocol Breakdown:")
+        for proto, count in report.protocols_breakdown.items():
+            print(f"    - {proto:<14}: {count} packet(s)")
+
+        print(f"\n[+] Behavioral Threat Alerts Flagged: {len(report.threat_alerts)}")
+        print("--------------------------------------------------------------------------------------------------------")
+        print(f"{'ALERT ID':<14} {'SEVERITY':<10} {'THREAT NAME':<34} {'DESCRIPTION'}")
+        print("--------------------------------------------------------------------------------------------------------")
+        for a in report.threat_alerts:
+            print(f"{a.alert_id:<14} {a.severity:<10} {a.threat_name:<34} {a.description}")
+        print("--------------------------------------------------------------------------------------------------------")
+
+        if args.json_out:
+            j_path = Path(args.json_out)
+            j_path.parent.mkdir(parents=True, exist_ok=True)
+            j_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+            print(f"\n[+] Exported JSON forensic report to: {j_path}")
+
+    elif args.command == "tui":
+        tui = FirmSightTUI()
+        tui.run(interactive=args.interactive)
+
+    elif args.command == "report":
+        print("[======================================================================]")
+        print("[  FirmSight: Executive HTML Security Audit Report Generator           ]")
+        print("[======================================================================]")
+        rep_gen = ReportGenerator()
+        out_file = rep_gen.generate(output_file=args.out)
+        print(f"[+] Successfully generated Executive HTML Audit Report!")
+        print(f"[+] File: {out_file.resolve()}")
+        print(f"[+] Open this file in your browser to view interactive visual dashboards.")
 
     else:
         parser.print_help()
