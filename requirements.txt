@@ -1,0 +1,17 @@
+# FirmSight: IoT Firmware Emulation & Dynamic Analysis Sandbox
+# Python Core Dependencies
+
+# Terminal UI & Formatting
+textual>=0.40.0
+rich>=13.0.0
+
+# Binary Reverse Engineering & Memory Hooking
+r2pipe>=1.9.0
+
+# Network Packet Analysis
+dpkt>=1.9.8
+scapy>=2.5.0
+
+# Testing & Quality Assurance
+pytest>=7.0.0
+pytest-mock>=3.10.0
